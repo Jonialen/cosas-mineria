@@ -829,7 +829,3 @@ cat("  Para clasificación de rango de precio, el modelo con mayor\n")
 cat("  accuracy y Kappa es preferible porque también considera el\n")
 cat("  balance entre clases, no solo el error global.\n")
 ```
-
----
-
-*Análisis realizado con R | Dataset: listings.RData | Semilla: 42 | Grupo SmartStay Advisors*
