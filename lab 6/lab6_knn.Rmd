@@ -485,3 +485,347 @@ acc_base <- mean(pred_clas_base == y_test_cat)
 cat("=== KNN Clasificación (k=5, Euclidiana) ===\n")
 cat("Accuracy:", round(acc_base, 4), "\n")
 ```
+
+## Matriz de confusión
+
+```{r matriz-confusion}
+conf_base <- table(
+  Predicho = pred_clas_base,
+  Real     = y_test_cat
+)
+
+cat("\nMatriz de confusión (k=5):\n")
+print(conf_base)
+
+# Métricas por clase
+calcular_metricas <- function(conf_mat, clase) {
+  tp <- conf_mat[clase, clase]
+  fp <- sum(conf_mat[clase, ]) - tp
+  fn <- sum(conf_mat[, clase]) - tp
+  tn <- sum(conf_mat) - tp - fp - fn
+
+  precision <- tp / (tp + fp)
+  recall    <- tp / (tp + fn)
+  f1        <- 2 * precision * recall / (precision + recall)
+
+  c(Precision = round(precision, 4),
+    Recall    = round(recall, 4),
+    F1        = round(f1, 4))
+}
+
+metricas_clase <- do.call(rbind, lapply(
+  c("barata", "media", "cara"),
+  function(cl) calcular_metricas(conf_base, cl)
+))
+rownames(metricas_clase) <- c("barata", "media", "cara")
+
+kable(metricas_clase, caption = "Métricas por clase — KNN Clasificación (k=5)")
+```
+
+```{r vis-confusion, fig.cap="Mapa de calor — Matriz de confusión KNN Clasificación (k=5)"}
+conf_df <- as.data.frame(conf_base)
+
+ggplot(conf_df, aes(x = Real, y = Predicho, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 5, fontface = "bold") +
+  scale_fill_gradient(low = "#EEF5FF", high = "#2E86AB") +
+  labs(title = "Matriz de Confusión — KNN Clasificación (k=5)",
+       x = "Clase Real", y = "Clase Predicha", fill = "Frecuencia") +
+  theme_minimal()
+```
+
+## Análisis de sobreajuste
+
+```{r sobreajuste}
+# Evaluar sobre train para detectar overfitting
+knn_train_eval <- kknn::kknn(
+  precio_cat ~ .,
+  train = train_n[, c(features, "precio_cat")],
+  test  = train_n[, c(features, "precio_cat")],
+  k = 5, distance = 2, kernel = "rectangular"
+)
+
+acc_train <- mean(knn_train_eval$fitted.values == y_train_cat)
+cat("Accuracy en TRAIN:", round(acc_train, 4), "\n")
+cat("Accuracy en TEST: ", round(acc_base, 4), "\n")
+cat("Diferencia:       ", round(acc_train - acc_base, 4), "\n\n")
+
+cat("Interpretación:\n")
+if (acc_train - acc_base > 0.05) {
+  cat("  -> Posible SOBREAJUSTE: diferencia mayor al 5%.\n")
+} else {
+  cat("  -> No hay evidencia fuerte de sobreajuste (diferencia < 5%).\n")
+}
+cat("  Nota: KNN con k pequeño tiende a sobreajustar. ",
+    "Valores mayores de k generalizan mejor.\n")
+```
+
+## Tuning de hiperparámetros — Clasificación
+
+```{r tuning-clas, cache=TRUE}
+k_vals_c <- c(3, 5, 7, 10, 15, 20, 30, 50)
+p_vals_c <- c(1, 2, 3)
+
+resultados_clas <- expand.grid(k = k_vals_c, p = p_vals_c)
+resultados_clas$accuracy  <- NA
+resultados_clas$kappa     <- NA
+
+for (i in seq_len(nrow(resultados_clas))) {
+  k_i <- resultados_clas$k[i]
+  p_i <- resultados_clas$p[i]
+
+  fit_i <- kknn::kknn(
+    precio_cat ~ .,
+    train    = train_n[, c(features, "precio_cat")],
+    test     = test_n[,  c(features, "precio_cat")],
+    k        = k_i,
+    distance = p_i,
+    kernel   = "rectangular"
+  )
+
+  pred_i <- fit_i$fitted.values
+  resultados_clas$accuracy[i] <- mean(pred_i == y_test_cat)
+
+  # Kappa de Cohen
+  n    <- length(pred_i)
+  conf <- table(pred_i, y_test_cat)
+  po   <- sum(diag(conf)) / n
+  pe   <- sum(rowSums(conf) * colSums(conf)) / n^2
+  resultados_clas$kappa[i] <- (po - pe) / (1 - pe)
+}
+
+mejor_clas <- resultados_clas[which.max(resultados_clas$accuracy), ]
+cat("=== Mejor configuración de clasificación (Accuracy máximo) ===\n")
+print(mejor_clas)
+```
+
+```{r vis-tuning-clas, fig.cap="Accuracy por valor de k y métrica de distancia"}
+resultados_clas$p_label <- paste0("p=", resultados_clas$p,
+                                   ifelse(resultados_clas$p == 1, " (Manhattan)",
+                                   ifelse(resultados_clas$p == 2, " (Euclidiana)",
+                                                                   " (Minkowski p=3)")))
+
+ggplot(resultados_clas, aes(x = k, y = accuracy, color = p_label, group = p_label)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  geom_vline(xintercept = mejor_clas$k, linetype = "dashed", color = "darkred") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Tuning de Hiperparámetros — KNN Clasificación",
+       x = "Número de vecinos (k)", y = "Accuracy", color = "Distancia") +
+  theme_minimal()
+```
+
+## Modelo óptimo de clasificación
+
+```{r knn-clas-optimo}
+knn_clas_opt <- kknn::kknn(
+  precio_cat ~ .,
+  train    = train_n[, c(features, "precio_cat")],
+  test     = test_n[,  c(features, "precio_cat")],
+  k        = mejor_clas$k,
+  distance = mejor_clas$p,
+  kernel   = "rectangular"
+)
+
+pred_clas_opt <- knn_clas_opt$fitted.values
+acc_opt       <- mean(pred_clas_opt == y_test_cat)
+
+conf_opt <- table(Predicho = pred_clas_opt, Real = y_test_cat)
+cat("=== KNN Clasificación ÓPTIMO (k=", mejor_clas$k, ", p=", mejor_clas$p, ") ===\n")
+cat("Accuracy:", round(acc_opt, 4), "\n\n")
+print(conf_opt)
+```
+
+```{r vis-confusion-opt, fig.cap="Mapa de calor — Matriz de confusión KNN Óptimo"}
+conf_opt_df <- as.data.frame(conf_opt)
+
+ggplot(conf_opt_df, aes(x = Real, y = Predicho, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 5, fontface = "bold") +
+  scale_fill_gradient(low = "#EEF5FF", high = "#E87461") +
+  labs(title = paste0("Matriz de Confusión — KNN Óptimo (k=", mejor_clas$k,
+                      ", p=", mejor_clas$p, ")"),
+       x = "Clase Real", y = "Clase Predicha", fill = "Frecuencia") +
+  theme_minimal()
+```
+
+## Validación cruzada — Clasificación
+
+```{r cv-clas}
+set.seed(42)
+cv_clas <- kknn::cv.kknn(
+  precio_cat ~ .,
+  data     = train_n[, c(features, "precio_cat")],
+  kcv      = 10,
+  k        = mejor_clas$k,
+  distance = mejor_clas$p,
+  kernel   = "rectangular"
+)
+
+pred_cv_clas  <- cv_clas[[1]][, 2]  # predicción OOF
+real_cv_clas  <- train_n$precio_cat
+
+acc_cv <- mean(pred_cv_clas == real_cv_clas)
+cat("=== Validación Cruzada (10-fold) — KNN Clasificación ===\n")
+cat("Accuracy-CV:", round(acc_cv, 4), "\n")
+cat("Accuracy-Test (modelo óptimo):", round(acc_opt, 4), "\n")
+cat("\nInterpretación:\n")
+if (abs(acc_cv - acc_opt) < 0.03) {
+  cat("  -> El modelo generaliza bien. CV y Test son consistentes.\n")
+} else {
+  cat("  -> Posible sobreajuste. CV y Test difieren en más del 3%.\n")
+}
+```
+
+---
+
+# Comparación de Modelos de Clasificación
+
+```{r modelos-clas-comparacion}
+# ---- Árbol de Decisión ----
+arbol_clas  <- rpart::rpart(precio_cat ~ .,
+                             data   = train_n[, c(features, "precio_cat")],
+                             method = "class",
+                             control = rpart::rpart.control(cp = 0.001))
+pred_arbol_clas <- predict(arbol_clas, newdata = test_n[, features], type = "class")
+acc_arbol       <- mean(pred_arbol_clas == y_test_cat)
+
+# Kappa para árbol
+conf_arbol <- table(pred_arbol_clas, y_test_cat)
+n_a  <- sum(conf_arbol)
+po_a <- sum(diag(conf_arbol)) / n_a
+pe_a <- sum(rowSums(conf_arbol) * colSums(conf_arbol)) / n_a^2
+kappa_arbol <- (po_a - pe_a) / (1 - pe_a)
+
+# ---- Naive Bayes ----
+nb_clas_fit  <- e1071::naiveBayes(precio_cat ~ .,
+                                   data = train_n[, c(features, "precio_cat")])
+pred_nb_clas <- predict(nb_clas_fit, newdata = test_n[, features])
+acc_nb       <- mean(pred_nb_clas == y_test_cat)
+
+conf_nb <- table(pred_nb_clas, y_test_cat)
+n_nb   <- sum(conf_nb)
+po_nb  <- sum(diag(conf_nb)) / n_nb
+pe_nb  <- sum(rowSums(conf_nb) * colSums(conf_nb)) / n_nb^2
+kappa_nb <- (po_nb - pe_nb) / (1 - pe_nb)
+
+# Kappa KNN base y óptimo
+conf_base_m <- table(pred_clas_base, y_test_cat)
+n_b   <- sum(conf_base_m)
+po_b  <- sum(diag(conf_base_m)) / n_b
+pe_b  <- sum(rowSums(conf_base_m) * colSums(conf_base_m)) / n_b^2
+kappa_base <- (po_b - pe_b) / (1 - pe_b)
+
+conf_opt_m <- table(pred_clas_opt, y_test_cat)
+n_o   <- sum(conf_opt_m)
+po_o  <- sum(diag(conf_opt_m)) / n_o
+pe_o  <- sum(rowSums(conf_opt_m) * colSums(conf_opt_m)) / n_o^2
+kappa_opt <- (po_o - pe_o) / (1 - pe_o)
+
+# ---- Tabla comparativa ----
+tabla_clas <- data.frame(
+  Modelo   = c("Árbol de Decisión", "Naive Bayes",
+                "KNN (k=5, base)", "KNN Óptimo", "KNN CV"),
+  Accuracy = round(c(acc_arbol, acc_nb, acc_base, acc_opt, acc_cv), 4),
+  Kappa    = round(c(kappa_arbol, kappa_nb, kappa_base, kappa_opt, NA), 4)
+)
+
+kable(tabla_clas, caption = "Comparación de modelos de clasificación — mismo train/test")
+```
+
+```{r vis-comparacion-clas, fig.cap="Accuracy comparativo entre modelos de clasificación"}
+tabla_clas_plot <- tabla_clas %>% filter(!is.na(Kappa))
+
+p1 <- ggplot(tabla_clas_plot, aes(x = reorder(Modelo, Accuracy), y = Accuracy, fill = Modelo)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  geom_text(aes(label = scales::percent(Accuracy, accuracy = 0.1)), hjust = -0.1, size = 3.5) +
+  labs(title = "Accuracy", x = NULL) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set1") +
+  ylim(0, 1)
+
+p2 <- ggplot(tabla_clas_plot, aes(x = reorder(Modelo, Kappa), y = Kappa, fill = Modelo)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  geom_text(aes(label = round(Kappa, 3)), hjust = -0.1, size = 3.5) +
+  labs(title = "Kappa de Cohen", x = NULL) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set1") +
+  ylim(0, 1)
+
+gridExtra::grid.arrange(p1, p2, ncol = 2,
+                         top = "Comparación de Modelos de Clasificación")
+```
+
+### Matrices de confusión de todos los modelos
+
+```{r todas-matrices, fig.height=8, fig.cap="Matrices de confusión comparadas"}
+hacer_mapa <- function(conf, titulo) {
+  df <- as.data.frame(conf)
+  names(df) <- c("Predicho", "Real", "Freq")
+  ggplot(df, aes(x = Real, y = Predicho, fill = Freq)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = Freq), size = 4) +
+    scale_fill_gradient(low = "#F7F9FC", high = "#2E86AB") +
+    labs(title = titulo, x = "Real", y = "Predicho") +
+    theme_minimal() +
+    theme(legend.position = "none")
+}
+
+g1 <- hacer_mapa(conf_arbol, "Árbol de Decisión")
+g2 <- hacer_mapa(conf_nb,    "Naive Bayes")
+g3 <- hacer_mapa(conf_base_m,"KNN Base (k=5)")
+g4 <- hacer_mapa(conf_opt_m, paste0("KNN Óptimo (k=", mejor_clas$k, ")"))
+
+gridExtra::grid.arrange(g1, g2, g3, g4, ncol = 2)
+```
+
+---
+
+# Análisis de Resultados y Conclusiones
+
+## Distancia óptima para KNN
+
+```{r analisis-distancia}
+cat("=== Análisis de métrica de distancia ===\n\n")
+
+cat("Regresión — mejor métrica:\n")
+cat("  p =", mejor_reg$p,
+    ifelse(mejor_reg$p == 1, "(Manhattan)",
+    ifelse(mejor_reg$p == 2, "(Euclidiana)", "(Minkowski p=3)")), "\n")
+cat("  k =", mejor_reg$k, "\n\n")
+
+cat("Clasificación — mejor métrica:\n")
+cat("  p =", mejor_clas$p,
+    ifelse(mejor_clas$p == 1, "(Manhattan)",
+    ifelse(mejor_clas$p == 2, "(Euclidiana)", "(Minkowski p=3)")), "\n")
+cat("  k =", mejor_clas$k, "\n\n")
+
+cat("Interpretación:\n")
+cat("  La distancia Euclidiana (p=2) es generalmente preferida cuando las features\n")
+cat("  están bien normalizadas y no hay outliers extremos, como en este caso.\n")
+cat("  Manhattan (p=1) puede ser más robusta cuando hay muchas dimensiones.\n")
+```
+
+## Resumen ejecutivo final
+
+```{r resumen-final}
+cat("=== RESUMEN EJECUTIVO ===\n\n")
+
+cat("REGRESIÓN (predicción de precio):\n")
+cat("  Mejor modelo:", tabla_reg$Modelo[which.min(tabla_reg$RMSE)], "\n")
+cat("  RMSE:", min(tabla_reg$RMSE), "USD\n\n")
+
+cat("CLASIFICACIÓN (categoría de precio):\n")
+acc_max <- max(tabla_clas$Accuracy, na.rm = TRUE)
+cat("  Mejor modelo:", tabla_clas$Modelo[which.max(tabla_clas$Accuracy)], "\n")
+cat("  Accuracy:", scales::percent(acc_max, accuracy = 0.1), "\n\n")
+
+cat("RECOMENDACIÓN PARA SMARTSTAY:\n")
+cat("  Para estimación de precio numérico, el modelo con menor RMSE\n")
+cat("  ofrece la predicción más precisa.\n")
+cat("  Para clasificación de rango de precio, el modelo con mayor\n")
+cat("  accuracy y Kappa es preferible porque también considera el\n")
+cat("  balance entre clases, no solo el error global.\n")
+```
