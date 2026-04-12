@@ -11,6 +11,8 @@ output:
     number_sections: true
 ---
 
+Enlace del repositorio: https://github.com/Jonialen/cosas-mineria
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
                       fig.width = 9, fig.height = 5)
