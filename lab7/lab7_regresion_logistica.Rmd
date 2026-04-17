@@ -11,6 +11,9 @@ output:
     number_sections: true
 ---
 
+Enlace del repositorio: https://github.com/Jonialen/cosas-mineria
+
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
                       fig.width = 9, fig.height = 5)
@@ -191,7 +194,7 @@ modelo_logit_base <- train(
   metric    = "ROC"
 )
 
-cat("=== Modelo Logístico Binario — CV 10-fold ===\n")
+cat("Modelo Logístico Binario — CV 10-fold\n")
 print(modelo_logit_base)
 ```
 
@@ -313,7 +316,7 @@ print(cm_base)
 ```
 
 ```{r metricas-test}
-cat("\n=== Métricas clave (umbral 0.5) ===\n")
+cat("\nMétricas clave (umbral 0.5) \n")
 cat("Accuracy:    ", round(cm_base$overall["Accuracy"], 4), "\n")
 cat("Sensitivity: ", round(cm_base$byClass["Sensitivity"], 4), "\n")
 cat("Specificity: ", round(cm_base$byClass["Specificity"], 4), "\n")
@@ -656,12 +659,12 @@ ggplot(cm_youden_df, aes(x = Reference, y = Prediction, fill = Freq)) +
 ```
 
 ```{r comparacion-umbrales-final}
-cat("=== Umbral 0.5 ===\n")
+cat("Umbral 0.5\n")
 cat("Accuracy:    ", round(cm_base$overall["Accuracy"],    4), "\n")
 cat("Sensitivity: ", round(cm_base$byClass["Sensitivity"], 4), "\n")
 cat("Specificity: ", round(cm_base$byClass["Specificity"], 4), "\n\n")
 
-cat("=== Umbral Youden (", round(umbral_opt, 2), ") ===\n")
+cat("Umbral Youden (", round(umbral_opt, 2), ")\n")
 cat("Accuracy:    ", round(cm_youden$overall["Accuracy"],    4), "\n")
 cat("Sensitivity: ", round(cm_youden$byClass["Sensitivity"], 4), "\n")
 cat("Specificity: ", round(cm_youden$byClass["Specificity"], 4), "\n")
