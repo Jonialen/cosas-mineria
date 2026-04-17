@@ -1,0 +1,18 @@
+# Datos grandes — no versionar
+*.RData
+*.rds
+*.csv
+
+# Artefactos de R
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# Caché de knitr/rmarkdown
+*_cache/
+*_files/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db

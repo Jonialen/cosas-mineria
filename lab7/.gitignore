@@ -1,0 +1,17 @@
+# Datos grandes — no versionar
+*.RData
+*.rds
+*.csv
+
+# Artefactos de R
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# Caché de knitr/rmarkdown
+*_cache/
+*_files/
+
+# Salida HTML sí se versiona (comentar si no se quiere)
+# *.html

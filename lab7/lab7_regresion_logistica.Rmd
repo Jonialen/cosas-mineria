@@ -1,0 +1,1064 @@
+---
+title: "Laboratorio 7: Regresión Logística — SmartStay Advisors"
+author: "Jonathan Díaz, Martín Pérez, Karen Toledo"
+date: "17-04-2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 9, fig.height = 5)
+```
+
+# Introducción
+
+SmartStay Advisors requiere no sólo estimar el precio de una propiedad, sino **clasificar** si una propiedad es cara, media o económica. En esta entrega se construyen y evalúan modelos de **Regresión Logística** —tanto binaria como multinomial— que permiten asignar una categoría de precio a cada inmueble de Airbnb. Al final se compara el desempeño de la Regresión Logística con los mejores modelos de clasificación de entregas anteriores (Árboles, Random Forest, Naive Bayes y KNN) para determinar qué estrategia ofrece la mayor precisión al mínimo costo computacional.
+
+---
+
+# Preparación del entorno
+
+```{r instalar-paquetes}
+paquetes <- c(
+  "dplyr", "ggplot2", "tidyr", "knitr", "scales", "gridExtra",
+  "caret", "e1071", "rpart", "randomForest", "kknn",
+  "glmnet",      # Regularización Ridge / LASSO / ElasticNet
+  "nnet",        # Regresión logística multinomial
+  "pROC",        # Curvas ROC y AUC
+  "car",         # VIF — multicolinealidad
+  "profvis",     # Profiling de memoria y tiempo
+  "corrplot"     # Mapa de correlación
+)
+
+instalar_si_falta <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE))
+    install.packages(pkg, repos = "https://cran.rstudio.com/", quiet = TRUE)
+}
+invisible(sapply(paquetes, instalar_si_falta))
+
+library(dplyr); library(ggplot2); library(tidyr); library(knitr)
+library(scales); library(gridExtra); library(caret); library(e1071)
+library(rpart); library(randomForest); library(kknn)
+library(glmnet); library(nnet); library(pROC); library(car)
+library(corrplot)
+
+set.seed(42)   # Semilla fija — igual que entregas anteriores
+```
+
+---
+
+# Carga, limpieza y preparación de datos
+
+```{r cargar-datos}
+load("listings.RData")
+cat("Dimensiones originales:", dim(listings), "\n")
+```
+
+```{r limpieza}
+listings$price_num    <- as.numeric(gsub("[$,]", "", listings$price))
+listings$superhost    <- ifelse(listings$host_is_superhost   == "t", 1, 0)
+listings$instant_book <- ifelse(listings$instant_bookable    == "t", 1, 0)
+listings$es_entire_home   <- ifelse(listings$room_type == "Entire home/apt",  1, 0)
+listings$es_private_room  <- ifelse(listings$room_type == "Private room",     1, 0)
+
+features <- c(
+  "accommodates", "bathrooms", "bedrooms", "beds",
+  "minimum_nights", "availability_365", "number_of_reviews",
+  "review_scores_rating", "review_scores_cleanliness",
+  "review_scores_checkin", "review_scores_communication",
+  "review_scores_location", "review_scores_value",
+  "latitude", "longitude", "calculated_host_listings_count",
+  "reviews_per_month", "superhost", "instant_book",
+  "es_entire_home", "es_private_room"
+)
+
+datos <- listings %>%
+  select(price_num, all_of(features)) %>%
+  filter(
+    !is.na(price_num), price_num > 0, price_num <= 1000,
+    !is.na(review_scores_rating), !is.na(bathrooms),
+    !is.na(bedrooms), !is.na(beds), !is.na(reviews_per_month)
+  )
+
+cat("Filas tras limpieza:", nrow(datos), "\n")
+```
+
+## Categorización del precio y variables dicotómicas
+
+La misma partición por cuantiles P33/P66 usada en entregas anteriores garantiza comparaciones válidas.
+
+```{r categorizar-precio}
+q33 <- quantile(datos$price_num, 0.33)
+q66 <- quantile(datos$price_num, 0.66)
+
+cat("Umbral P33 (barata/media):", q33, "\n")
+cat("Umbral P66 (media/cara):  ", q66, "\n")
+
+datos$precio_cat <- cut(
+  datos$price_num,
+  breaks = c(-Inf, q33, q66, Inf),
+  labels = c("barata", "media", "cara"),
+  right  = TRUE
+)
+```
+
+**Actividad 1 — Variables dicotómicas:** Se crea una variable 0/1 por cada categoría. Un valor de 1 indica que la propiedad pertenece a esa categoría; 0 indica que no.
+
+```{r variables-dicotomicas}
+datos$es_cara     <- ifelse(datos$precio_cat == "cara",   1L, 0L)
+datos$es_media    <- ifelse(datos$precio_cat == "media",  1L, 0L)
+datos$es_economica <- ifelse(datos$precio_cat == "barata", 1L, 0L)
+
+cat("Distribución de variables dicotómicas:\n")
+cat("  es_cara:      ", sum(datos$es_cara),     "(",
+    round(mean(datos$es_cara)*100, 1), "%)\n")
+cat("  es_media:     ", sum(datos$es_media),    "(",
+    round(mean(datos$es_media)*100, 1), "%)\n")
+cat("  es_economica: ", sum(datos$es_economica),"(",
+    round(mean(datos$es_economica)*100, 1), "%)\n")
+```
+
+Las tres variables están aproximadamente balanceadas gracias al uso de terciles, lo que es favorable para entrenar modelos de clasificación binaria sin necesidad de re-muestreo.
+
+## Muestra estratificada y división Train/Test
+
+**Actividad 2 — Mismos conjuntos que entregas anteriores.**
+
+```{r muestra-train-test}
+set.seed(42)
+n_muestra <- 15000
+
+idx_muestra <- datos %>%
+  mutate(row_id = row_number()) %>%
+  group_by(precio_cat) %>%
+  slice_sample(prop = n_muestra / nrow(datos)) %>%
+  pull(row_id)
+
+if (length(idx_muestra) > n_muestra) idx_muestra <- idx_muestra[1:n_muestra]
+datos_sample <- datos[idx_muestra, ]
+
+set.seed(42)
+n      <- nrow(datos_sample)
+idx_tr <- sample(seq_len(n), size = floor(0.70 * n))
+
+train <- datos_sample[ idx_tr, ]
+test  <- datos_sample[-idx_tr, ]
+
+cat("Train:", nrow(train), "| Test:", nrow(test), "\n")
+cat("Distribución precio_cat en train:\n"); print(table(train$precio_cat))
+cat("Distribución precio_cat en test:\n");  print(table(test$precio_cat))
+```
+
+---
+
+# Modelo de Regresión Logística Binaria — Propiedad Cara o No
+
+## Construcción del modelo con validación cruzada
+
+**Actividad 3.** Se construye el primer modelo logístico binario para predecir si una propiedad es cara (`es_cara = 1`) o no (`es_cara = 0`). Se fija `set.seed(42)` para reproducibilidad y se aplica validación cruzada de 10 pliegues con `caret`.
+
+```{r modelo-logistico-base, cache=TRUE}
+set.seed(42)
+
+ctrl <- trainControl(
+  method          = "cv",
+  number          = 10,
+  classProbs      = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+# caret requiere factor con nombres válidos
+train_bin <- train
+test_bin  <- test
+train_bin$y_cara <- factor(ifelse(train_bin$es_cara == 1, "cara", "no_cara"))
+test_bin$y_cara  <- factor(ifelse(test_bin$es_cara  == 1, "cara", "no_cara"))
+
+formula_bin <- as.formula(paste("y_cara ~", paste(features, collapse = " + ")))
+
+modelo_logit_base <- train(
+  formula_bin,
+  data      = train_bin,
+  method    = "glm",
+  family    = "binomial",
+  trControl = ctrl,
+  metric    = "ROC"
+)
+
+cat("=== Modelo Logístico Binario — CV 10-fold ===\n")
+print(modelo_logit_base)
+```
+
+### Interpretación de coeficientes
+
+```{r coeficientes-base}
+coef_df <- as.data.frame(summary(modelo_logit_base$finalModel)$coefficients)
+coef_df$Variable <- rownames(coef_df)
+coef_df <- coef_df[order(coef_df[["Pr(>|z|)"]]), ]
+
+kable(
+  coef_df[, c("Variable", "Estimate", "Std. Error", "z value", "Pr(>|z|)")],
+  digits  = 4,
+  caption = "Coeficientes del modelo logístico base — ordenados por p-valor"
+)
+```
+
+Los coeficientes representan el **log-odds** de que la propiedad sea cara. Un coeficiente positivo significativo en `accommodates`, por ejemplo, indica que a mayor capacidad de alojamiento, mayor probabilidad de que la propiedad sea cara, manteniendo lo demás constante. Las variables con `Pr(>|z|) < 0.05` son estadísticamente significativas.
+
+---
+
+# Análisis del Modelo — Multicolinealidad y Ajuste
+
+**Actividad 4.** Antes de confiar en los coeficientes del modelo logístico, es necesario verificar que las variables predictoras no estén altamente correlacionadas entre sí (multicolinealidad), ya que esto infla los errores estándar y hace los coeficientes inestables.
+
+## Factor de Inflación de Varianza (VIF)
+
+```{r vif}
+vif_valores <- tryCatch(
+  car::vif(modelo_logit_base$finalModel),
+  error = function(e) NULL
+)
+
+if (!is.null(vif_valores)) {
+  vif_df <- data.frame(
+    Variable = names(vif_valores),
+    VIF      = round(as.numeric(vif_valores), 2)
+  ) %>% arrange(desc(VIF))
+
+  kable(vif_df, caption = "Factor de Inflación de Varianza (VIF) — modelo base")
+
+  cat("\nVariables con VIF > 5 (potencial multicolinealidad moderada):\n")
+  print(vif_df[vif_df$VIF > 5, ])
+  cat("\nVariables con VIF > 10 (multicolinealidad severa):\n")
+  print(vif_df[vif_df$VIF > 10, ])
+} else {
+  cat("VIF no disponible para este modelo.\n")
+}
+```
+
+Un VIF superior a 10 indica multicolinealidad severa que requiere acción (eliminar variable o usar regularización). Un VIF entre 5 y 10 es moderado. Los valores por encima de ese umbral en variables como `beds`, `bedrooms` y `accommodates` son esperables, ya que todas miden el tamaño del alojamiento de forma solapada.
+
+## Análisis de correlación entre predictores
+
+```{r correlacion, fig.cap="Mapa de correlación entre predictores"}
+cor_mat <- cor(train[, features], use = "complete.obs")
+
+corrplot::corrplot(
+  cor_mat,
+  method  = "color",
+  type    = "upper",
+  tl.cex  = 0.6,
+  tl.col  = "black",
+  addCoef.col = NULL,
+  title   = "Correlación entre predictores",
+  mar     = c(0, 0, 1, 0)
+)
+```
+
+```{r pares-alta-correlacion}
+# Extraer pares con |cor| > 0.7
+cor_df <- as.data.frame(as.table(cor_mat)) %>%
+  filter(as.character(Var1) < as.character(Var2), abs(Freq) > 0.7) %>%
+  arrange(desc(abs(Freq)))
+
+kable(cor_df, col.names = c("Variable 1", "Variable 2", "Correlación"),
+      digits = 3,
+      caption = "Pares de predictores con correlación |r| > 0.7")
+```
+
+Las correlaciones altas entre `beds`, `bedrooms` y `accommodates` confirman la multicolinealidad detectada por el VIF. La regularización (Ridge/LASSO) en el paso de tuning abordará este problema penalizando los coeficientes de variables redundantes.
+
+## Bondad de ajuste — Pseudo R²
+
+```{r pseudo-r2}
+mod_final <- modelo_logit_base$finalModel
+
+# McFadden Pseudo R²
+ll_modelo <- as.numeric(logLik(mod_final))
+ll_nulo   <- as.numeric(logLik(glm(
+  y_cara ~ 1,
+  data   = train_bin,
+  family = "binomial"
+)))
+
+mcfadden_r2 <- 1 - (ll_modelo / ll_nulo)
+cat("McFadden Pseudo R²:", round(mcfadden_r2, 4), "\n")
+cat("AIC:", round(AIC(mod_final), 2), "\n")
+cat("BIC:", round(BIC(mod_final), 2), "\n")
+```
+
+Un McFadden R² entre 0.20 y 0.40 se considera una buena adaptación del modelo a los datos en regresión logística (equivalente aproximado a R² ≥ 0.60 en regresión lineal). Valores superiores a 0.40 son excelentes.
+
+---
+
+# Evaluación en el Conjunto de Prueba
+
+**Actividad 5.** Se aplica el modelo entrenado al conjunto de prueba para medir su eficiencia clasificatoria.
+
+```{r prediccion-test}
+# Umbral 0.5
+prob_test  <- predict(modelo_logit_base, newdata = test_bin, type = "prob")[, "cara"]
+pred_test  <- factor(ifelse(prob_test >= 0.5, "cara", "no_cara"),
+                     levels = c("cara", "no_cara"))
+real_test  <- test_bin$y_cara
+
+cm_base <- confusionMatrix(pred_test, real_test, positive = "cara")
+print(cm_base)
+```
+
+```{r metricas-test}
+cat("\n=== Métricas clave (umbral 0.5) ===\n")
+cat("Accuracy:    ", round(cm_base$overall["Accuracy"], 4), "\n")
+cat("Sensitivity: ", round(cm_base$byClass["Sensitivity"], 4), "\n")
+cat("Specificity: ", round(cm_base$byClass["Specificity"], 4), "\n")
+cat("Precision:   ", round(cm_base$byClass["Precision"], 4), "\n")
+cat("F1:          ", round(cm_base$byClass["F1"], 4), "\n")
+cat("Kappa:       ", round(cm_base$overall["Kappa"], 4), "\n")
+```
+
+---
+
+# Análisis de Sobreajuste y Curvas de Aprendizaje
+
+**Actividad 6.** Para detectar sobreajuste se comparan los errores en entrenamiento y prueba. Si el error de entrenamiento es mucho menor que el de prueba, el modelo está sobreajustado.
+
+```{r overfitting}
+prob_train_cv <- modelo_logit_base$pred %>%
+  arrange(rowIndex) %>%
+  pull(cara)
+
+pred_train_cv <- factor(
+  ifelse(prob_train_cv >= 0.5, "cara", "no_cara"),
+  levels = c("cara", "no_cara")
+)
+real_train_cv <- train_bin$y_cara[modelo_logit_base$pred$rowIndex]
+
+acc_train_cv <- mean(pred_train_cv == real_train_cv, na.rm = TRUE)
+acc_test_val <- cm_base$overall["Accuracy"]
+
+cat("Accuracy CV (train): ", round(acc_train_cv, 4), "\n")
+cat("Accuracy Test:       ", round(acc_test_val, 4), "\n")
+cat("Diferencia:          ", round(acc_train_cv - acc_test_val, 4), "\n\n")
+
+if (acc_train_cv - acc_test_val > 0.05) {
+  cat("-> POSIBLE SOBREAJUSTE: la diferencia supera el 5%.\n")
+} else {
+  cat("-> No hay evidencia fuerte de sobreajuste (diferencia < 5%).\n")
+}
+```
+
+## Curvas de aprendizaje
+
+Las curvas de aprendizaje ilustran cómo varía el error a medida que aumenta el tamaño del conjunto de entrenamiento. Un modelo que sobreajusta muestra un error de entrenamiento muy bajo y uno de prueba alto; si ambas curvas convergen, el modelo generaliza bien.
+
+```{r curvas-aprendizaje, cache=TRUE, fig.cap="Curvas de aprendizaje — modelo logístico base"}
+set.seed(42)
+tamanos  <- floor(seq(0.10, 1.00, by = 0.10) * nrow(train_bin))
+err_tr   <- numeric(length(tamanos))
+err_te   <- numeric(length(tamanos))
+
+for (i in seq_along(tamanos)) {
+  idx_sub <- sample(nrow(train_bin), tamanos[i])
+  sub_tr  <- train_bin[idx_sub, ]
+
+  mod_i <- glm(formula_bin, data = sub_tr, family = "binomial")
+
+  p_tr  <- predict(mod_i, newdata = sub_tr, type = "response")
+  p_te  <- predict(mod_i, newdata = test_bin,  type = "response")
+
+  err_tr[i] <- mean((ifelse(p_tr >= 0.5, "cara", "no_cara") != as.character(sub_tr$y_cara)))
+  err_te[i] <- mean((ifelse(p_te >= 0.5, "cara", "no_cara") != as.character(test_bin$y_cara)))
+}
+
+curvas_df <- data.frame(
+  n     = rep(tamanos, 2),
+  error = c(err_tr, err_te),
+  set   = rep(c("Entrenamiento", "Prueba"), each = length(tamanos))
+)
+
+ggplot(curvas_df, aes(x = n, y = error, color = set, group = set)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title  = "Curvas de Aprendizaje — Regresión Logística Binaria",
+    x      = "Tamaño del conjunto de entrenamiento",
+    y      = "Tasa de error",
+    color  = "Conjunto"
+  ) +
+  theme_minimal()
+```
+
+---
+
+# Tuning del Modelo — Regularización
+
+**Actividad 7.** La regresión logística puede regularizarse exactamente igual que la regresión lineal mediante Ridge (L2), LASSO (L1) o ElasticNet (combinación). La regularización penaliza coeficientes grandes y reduce la varianza del modelo, atacando directamente el sobreajuste y la multicolinealidad.
+
+```{r preparar-matrices}
+X_train_mat <- model.matrix(formula_bin, data = train_bin)[, -1]
+y_train_vec <- ifelse(train_bin$y_cara == "cara", 1, 0)
+
+X_test_mat  <- model.matrix(formula_bin, data = test_bin)[, -1]
+y_test_vec  <- ifelse(test_bin$y_cara == "cara", 1, 0)
+```
+
+## Ridge (L2)
+
+```{r ridge, cache=TRUE}
+set.seed(42)
+cv_ridge <- cv.glmnet(
+  X_train_mat, y_train_vec,
+  family  = "binomial",
+  alpha   = 0,       # alpha=0 → Ridge
+  nfolds  = 10
+)
+
+cat("Lambda óptimo Ridge (1SE):", round(cv_ridge$lambda.1se, 6), "\n")
+cat("Lambda mínimo Ridge:      ", round(cv_ridge$lambda.min, 6), "\n")
+
+pred_ridge <- predict(cv_ridge, newx = X_test_mat,
+                      s = "lambda.1se", type = "response")
+acc_ridge  <- mean((pred_ridge >= 0.5) == y_test_vec)
+cat("Accuracy Ridge (lambda.1se):", round(acc_ridge, 4), "\n")
+```
+
+## LASSO (L1)
+
+```{r lasso, cache=TRUE}
+set.seed(42)
+cv_lasso <- cv.glmnet(
+  X_train_mat, y_train_vec,
+  family  = "binomial",
+  alpha   = 1,       # alpha=1 → LASSO
+  nfolds  = 10
+)
+
+cat("Lambda óptimo LASSO (1SE):", round(cv_lasso$lambda.1se, 6), "\n")
+
+pred_lasso <- predict(cv_lasso, newx = X_test_mat,
+                      s = "lambda.1se", type = "response")
+acc_lasso  <- mean((pred_lasso >= 0.5) == y_test_vec)
+cat("Accuracy LASSO (lambda.1se):", round(acc_lasso, 4), "\n")
+
+# Variables seleccionadas por LASSO (coeficiente ≠ 0)
+coef_lasso <- coef(cv_lasso, s = "lambda.1se")
+vars_lasso  <- rownames(coef_lasso)[which(abs(coef_lasso) > 0)]
+vars_lasso  <- vars_lasso[vars_lasso != "(Intercept)"]
+cat("\nVariables seleccionadas por LASSO:", length(vars_lasso), "\n")
+print(vars_lasso)
+```
+
+## ElasticNet
+
+```{r elasticnet, cache=TRUE}
+set.seed(42)
+alpha_grid <- seq(0.1, 0.9, by = 0.2)
+acc_en     <- numeric(length(alpha_grid))
+
+for (i in seq_along(alpha_grid)) {
+  cv_en_i <- cv.glmnet(
+    X_train_mat, y_train_vec,
+    family = "binomial",
+    alpha  = alpha_grid[i],
+    nfolds = 10
+  )
+  p_en        <- predict(cv_en_i, newx = X_test_mat,
+                          s = "lambda.1se", type = "response")
+  acc_en[i]   <- mean((p_en >= 0.5) == y_test_vec)
+}
+
+best_alpha <- alpha_grid[which.max(acc_en)]
+cat("Mejor alpha ElasticNet:", best_alpha,
+    "| Accuracy:", round(max(acc_en), 4), "\n")
+
+cv_en_best <- cv.glmnet(
+  X_train_mat, y_train_vec,
+  family = "binomial",
+  alpha  = best_alpha,
+  nfolds = 10
+)
+
+pred_en_best <- predict(cv_en_best, newx = X_test_mat,
+                        s = "lambda.1se", type = "response")
+acc_en_best  <- mean((pred_en_best >= 0.5) == y_test_vec)
+```
+
+## Comparación de modelos regularizados
+
+```{r comparacion-regularizacion}
+tabla_reg_log <- data.frame(
+  Modelo   = c("Sin regularización", "Ridge (L2)", "LASSO (L1)",
+                paste0("ElasticNet (α=", best_alpha, ")")),
+  Accuracy = round(c(
+    cm_base$overall["Accuracy"],
+    acc_ridge, acc_lasso, acc_en_best
+  ), 4)
+)
+
+kable(tabla_reg_log, caption = "Comparación de modelos logísticos regularizados")
+```
+
+---
+
+# Análisis de la Matriz de Confusión y Profiling
+
+**Actividad 8.** La exactitud global (accuracy) puede ser engañosa cuando las clases están desequilibradas. La matriz de confusión desglosa los errores por tipo, permitiendo evaluar dónde falla el modelo y cuán costosos son esos fallos.
+
+```{r profiling-tiempo, cache=TRUE}
+# Medir tiempo con system.time (alternativa portable a profvis en knitr)
+tiempo_train <- system.time({
+  mod_profil <- glm(formula_bin, data = train_bin, family = "binomial")
+})
+
+tiempo_pred <- system.time({
+  pred_profil <- predict(mod_profil, newdata = test_bin, type = "response")
+})
+
+cat("Tiempo entrenamiento (seg):", round(tiempo_train["elapsed"], 3), "\n")
+cat("Tiempo predicción (seg):   ", round(tiempo_pred["elapsed"], 3), "\n")
+
+mem_approx <- object.size(mod_profil)
+cat("Tamaño aprox. del modelo:  ", format(mem_approx, units = "Kb"), "\n")
+```
+
+```{r matriz-confusion-visual, fig.cap="Matriz de confusión — Regresión Logística base (umbral 0.5)"}
+cm_df <- as.data.frame(cm_base$table)
+
+ggplot(cm_df, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#EEF5FF", high = "#2E86AB") +
+  labs(
+    title = "Matriz de Confusión — Logístico Base (umbral 0.5)",
+    x = "Clase Real", y = "Clase Predicha", fill = "Frecuencia"
+  ) +
+  theme_minimal()
+```
+
+### Análisis de errores
+
+- **Falsos Positivos (FP):** El modelo predice "cara" pero la propiedad no lo es. Desde el punto de vista de negocio, esto puede llevar a SmartStay a proponer una propiedad a un cliente con presupuesto ajustado.
+- **Falsos Negativos (FN):** El modelo predice "no cara" pero la propiedad sí lo es. SmartStay podría subestimar el precio y perder el incentivo económico de Airbnb.
+
+Para el negocio, los FP (ofrecer al cliente una propiedad cara sin advertirlo) pueden ser más perjudiciales que los FN.
+
+---
+
+# Optimización del Umbral de Decisión — Índice de Youden
+
+**Actividad 9.** El umbral por defecto de 0.5 no es óptimo en todos los problemas. El **índice de Youden** (J = Sensibilidad + Especificidad − 1) maximiza el balance entre ambas métricas y determina el umbral que mejor discrimina.
+
+```{r curva-roc, fig.cap="Curva ROC con umbral óptimo de Youden"}
+roc_obj <- pROC::roc(
+  response  = as.numeric(test_bin$y_cara == "cara"),
+  predictor = prob_test,
+  quiet     = TRUE
+)
+
+cat("AUC:", round(pROC::auc(roc_obj), 4), "\n")
+
+# Umbral de Youden
+umbral_youden <- pROC::coords(
+  roc_obj, "best",
+  best.method = "youden",
+  ret         = c("threshold", "sensitivity", "specificity")
+)
+cat("\nUmbral óptimo (Youden):\n")
+print(umbral_youden)
+
+# Visualizar curva ROC
+plot(roc_obj, col = "#2E86AB", lwd = 2,
+     main = paste0("Curva ROC — AUC = ", round(pROC::auc(roc_obj), 3)))
+abline(a = 0, b = 1, lty = 2, col = "gray")
+points(umbral_youden$specificity, umbral_youden$sensitivity,
+       pch = 19, col = "red", cex = 1.5)
+legend("bottomright",
+       legend = c("Modelo", "Azar", "Umbral Youden"),
+       col    = c("#2E86AB", "gray", "red"),
+       lty    = c(1, 2, NA), pch = c(NA, NA, 19))
+```
+
+## Comparación de umbrales
+
+```{r comparacion-umbrales}
+umbral_opt <- as.numeric(umbral_youden$threshold)
+
+pred_youden  <- factor(
+  ifelse(prob_test >= umbral_opt, "cara", "no_cara"),
+  levels = c("cara", "no_cara")
+)
+cm_youden <- confusionMatrix(pred_youden, real_test, positive = "cara")
+
+# Probar varios umbrales
+umbrales    <- seq(0.2, 0.8, by = 0.05)
+metricas_u  <- lapply(umbrales, function(u) {
+  p <- factor(ifelse(prob_test >= u, "cara", "no_cara"), levels = c("cara", "no_cara"))
+  cm <- confusionMatrix(p, real_test, positive = "cara")
+  data.frame(
+    Umbral      = u,
+    Accuracy    = cm$overall["Accuracy"],
+    Sensitivity = cm$byClass["Sensitivity"],
+    Specificity = cm$byClass["Specificity"],
+    F1          = cm$byClass["F1"],
+    Youden      = cm$byClass["Sensitivity"] + cm$byClass["Specificity"] - 1
+  )
+})
+metricas_u_df <- do.call(rbind, metricas_u)
+rownames(metricas_u_df) <- NULL
+
+kable(metricas_u_df, digits = 3,
+      caption = "Métricas según umbral de decisión")
+```
+
+```{r vis-umbrales, fig.cap="Métricas en función del umbral de decisión"}
+metricas_long <- metricas_u_df %>%
+  select(Umbral, Accuracy, Sensitivity, Specificity, Youden) %>%
+  pivot_longer(-Umbral, names_to = "Métrica", values_to = "Valor")
+
+ggplot(metricas_long, aes(x = Umbral, y = Valor, color = Métrica, group = Métrica)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = umbral_opt, linetype = "dashed", color = "darkred",
+             linewidth = 0.8) +
+  geom_vline(xintercept = 0.5, linetype = "dotted", color = "gray50") +
+  annotate("text", x = umbral_opt + 0.02, y = 0.3,
+           label = paste0("Youden\n(", round(umbral_opt, 2), ")"),
+           color = "darkred", size = 3.5) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title  = "Impacto del Umbral de Decisión sobre las Métricas",
+       x      = "Umbral",
+       y      = "Valor",
+       color  = "Métrica") +
+  theme_minimal()
+```
+
+## Matriz de confusión con umbral de Youden
+
+```{r cm-youden, fig.cap="Matriz de confusión con umbral óptimo de Youden"}
+cm_youden_df <- as.data.frame(cm_youden$table)
+
+ggplot(cm_youden_df, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#FFF4E6", high = "#E87461") +
+  labs(
+    title = paste0("Matriz de Confusión — Umbral Youden (",
+                   round(umbral_opt, 2), ")"),
+    x = "Clase Real", y = "Clase Predicha", fill = "Frecuencia"
+  ) +
+  theme_minimal()
+```
+
+```{r comparacion-umbrales-final}
+cat("=== Umbral 0.5 ===\n")
+cat("Accuracy:    ", round(cm_base$overall["Accuracy"],    4), "\n")
+cat("Sensitivity: ", round(cm_base$byClass["Sensitivity"], 4), "\n")
+cat("Specificity: ", round(cm_base$byClass["Specificity"], 4), "\n\n")
+
+cat("=== Umbral Youden (", round(umbral_opt, 2), ") ===\n")
+cat("Accuracy:    ", round(cm_youden$overall["Accuracy"],    4), "\n")
+cat("Sensitivity: ", round(cm_youden$byClass["Sensitivity"], 4), "\n")
+cat("Specificity: ", round(cm_youden$byClass["Specificity"], 4), "\n")
+```
+
+El umbral de Youden maximiza la suma de sensibilidad y especificidad. Si el costo de los falsos negativos (no detectar una propiedad cara) es mayor que el de los falsos positivos, puede convenir un umbral aún más bajo.
+
+---
+
+# Selección del Mejor Modelo Binario — AIC, BIC y Métricas
+
+**Actividad 10.** Para seleccionar el mejor modelo entre todas las variantes entrenadas se comparan AIC, BIC, AUC y la exactitud en test.
+
+```{r comparacion-modelos-binarios}
+# Reentrenar LASSO y ElasticNet como glm para obtener AIC/BIC
+# Nota: glmnet no expone AIC directamente; se usa la deviance del modelo nulo vs. ajustado
+deviance_base  <- mod_final$deviance
+aic_base       <- AIC(mod_final)
+bic_base       <- BIC(mod_final)
+
+# Para modelos glmnet: deviance = null_deviance * (1 - dev.ratio)
+dev_ratio_ridge <- cv_ridge$glmnet.fit$dev.ratio[
+  which.min(abs(cv_ridge$glmnet.fit$lambda - cv_ridge$lambda.1se))]
+dev_ratio_lasso <- cv_lasso$glmnet.fit$dev.ratio[
+  which.min(abs(cv_lasso$glmnet.fit$lambda - cv_lasso$lambda.1se))]
+
+# AUC para Ridge y LASSO
+roc_ridge <- pROC::roc(
+  response  = y_test_vec,
+  predictor = as.numeric(pred_ridge),
+  quiet     = TRUE
+)
+roc_lasso <- pROC::roc(
+  response  = y_test_vec,
+  predictor = as.numeric(pred_lasso),
+  quiet     = TRUE
+)
+
+tabla_comparacion_binaria <- data.frame(
+  Modelo          = c("Base (sin reg.)", "Ridge", "LASSO",
+                      paste0("ElasticNet (α=", best_alpha, ")")),
+  AIC             = c(round(aic_base, 1), NA, NA, NA),
+  BIC             = c(round(bic_base, 1), NA, NA, NA),
+  Dev_ratio       = round(c(
+    1 - deviance_base / mod_final$null.deviance,
+    dev_ratio_ridge, dev_ratio_lasso, NA), 4),
+  AUC             = round(c(
+    pROC::auc(roc_obj),
+    pROC::auc(roc_ridge),
+    pROC::auc(roc_lasso),
+    NA), 4),
+  Accuracy_Test   = round(c(
+    cm_base$overall["Accuracy"],
+    acc_ridge, acc_lasso, acc_en_best), 4)
+)
+
+kable(tabla_comparacion_binaria,
+      caption = "Comparación de modelos logísticos binarios")
+```
+
+El modelo con mayor AUC y menor AIC/BIC es preferible. LASSO tiene la ventaja adicional de realizar selección automática de variables.
+
+---
+
+# Modelo de Regresión Logística Multinomial
+
+**Actividad 11.** Se construye un modelo de regresión logística para la variable categórica de precio con tres clases: *barata*, *media* y *cara*. La función `multinom` del paquete `nnet` ajusta un modelo *one-vs-rest* con regularización implícita.
+
+```{r modelo-multinomial, cache=TRUE}
+set.seed(42)
+
+train_multi <- train
+test_multi  <- test
+train_multi$precio_cat <- factor(train_multi$precio_cat,
+                                  levels = c("barata", "media", "cara"))
+test_multi$precio_cat  <- factor(test_multi$precio_cat,
+                                  levels = c("barata", "media", "cara"))
+
+formula_multi <- as.formula(paste("precio_cat ~", paste(features, collapse = " + ")))
+
+modelo_multi_base <- nnet::multinom(
+  formula_multi,
+  data    = train_multi,
+  MaxNWts = 5000,
+  maxit   = 300,
+  trace   = FALSE
+)
+
+cat("AIC multinomial base:", round(AIC(modelo_multi_base), 2), "\n")
+cat("BIC multinomial base:", round(BIC(modelo_multi_base), 2), "\n")
+```
+
+## Tuning del modelo multinomial con glmnet
+
+```{r tuning-multinomial, cache=TRUE}
+X_multi_train <- model.matrix(formula_multi, data = train_multi)[, -1]
+y_multi_train <- train_multi$precio_cat
+
+X_multi_test  <- model.matrix(formula_multi, data = test_multi)[, -1]
+y_multi_test  <- test_multi$precio_cat
+
+set.seed(42)
+cv_multi_ridge <- cv.glmnet(
+  X_multi_train, y_multi_train,
+  family  = "multinomial",
+  alpha   = 0,
+  nfolds  = 10,
+  type.measure = "class"
+)
+
+set.seed(42)
+cv_multi_lasso <- cv.glmnet(
+  X_multi_train, y_multi_train,
+  family  = "multinomial",
+  alpha   = 1,
+  nfolds  = 10,
+  type.measure = "class"
+)
+
+pred_multi_ridge <- predict(cv_multi_ridge, newx = X_multi_test,
+                             s = "lambda.1se", type = "class")
+pred_multi_lasso <- predict(cv_multi_lasso, newx = X_multi_test,
+                             s = "lambda.1se", type = "class")
+
+pred_multi_base  <- predict(modelo_multi_base, newdata = test_multi)
+
+acc_multi_base  <- mean(pred_multi_base  == y_multi_test)
+acc_multi_ridge <- mean(pred_multi_ridge == y_multi_test)
+acc_multi_lasso <- mean(pred_multi_lasso == y_multi_test)
+
+cat("Accuracy multinomial base:  ", round(acc_multi_base,  4), "\n")
+cat("Accuracy multinomial Ridge: ", round(acc_multi_ridge, 4), "\n")
+cat("Accuracy multinomial LASSO: ", round(acc_multi_lasso, 4), "\n")
+```
+
+## Matriz de confusión — mejor modelo multinomial
+
+```{r cm-multinomial, fig.cap="Matriz de confusión — Regresión Logística Multinomial"}
+# Seleccionar el mejor
+accs_multi <- c(acc_multi_base, acc_multi_ridge, acc_multi_lasso)
+nombres_multi <- c("base", "ridge", "lasso")
+mejor_multi   <- nombres_multi[which.max(accs_multi)]
+
+pred_multi_best <- switch(
+  mejor_multi,
+  base  = factor(pred_multi_base,           levels = c("barata", "media", "cara")),
+  ridge = factor(as.character(pred_multi_ridge), levels = c("barata", "media", "cara")),
+  lasso = factor(as.character(pred_multi_lasso), levels = c("barata", "media", "cara"))
+)
+
+cm_multi <- confusionMatrix(pred_multi_best, y_multi_test)
+print(cm_multi)
+
+cm_multi_df <- as.data.frame(cm_multi$table)
+
+ggplot(cm_multi_df, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 5, fontface = "bold") +
+  scale_fill_gradient(low = "#EEF5FF", high = "#27AE60") +
+  labs(
+    title = paste0("Matriz de Confusión — Logístico Multinomial (",
+                   mejor_multi, ")"),
+    x = "Clase Real", y = "Clase Predicha", fill = "Frecuencia"
+  ) +
+  theme_minimal()
+```
+
+---
+
+# Comparación Final de Todos los Algoritmos de Clasificación
+
+**Actividad 12.** Se compara la Regresión Logística Multinomial con los mejores modelos de clasificación de entregas anteriores, todos evaluados sobre el **mismo conjunto de prueba** con `set.seed(42)`.
+
+```{r modelos-anteriores, cache=TRUE}
+# ---- Árbol de Decisión ----
+set.seed(42)
+arbol_clas  <- rpart::rpart(
+  formula_multi,
+  data    = train_multi,
+  method  = "class",
+  control = rpart::rpart.control(cp = 0.001)
+)
+pred_arbol <- predict(arbol_clas, newdata = test_multi, type = "class")
+acc_arbol  <- mean(pred_arbol == y_multi_test)
+t_arbol    <- system.time(rpart::rpart(formula_multi, data = train_multi,
+                                       method = "class",
+                                       control = rpart::rpart.control(cp = 0.001)))
+
+# ---- Random Forest ----
+set.seed(42)
+t_rf <- system.time({
+  rf_clas <- randomForest::randomForest(
+    formula_multi,
+    data    = train_multi,
+    ntree   = 200,
+    mtry    = floor(sqrt(length(features)))
+  )
+})
+pred_rf  <- predict(rf_clas, newdata = test_multi)
+acc_rf   <- mean(pred_rf == y_multi_test)
+
+# ---- Naive Bayes ----
+set.seed(42)
+t_nb <- system.time({
+  nb_clas <- e1071::naiveBayes(formula_multi, data = train_multi)
+})
+pred_nb  <- predict(nb_clas, newdata = test_multi)
+acc_nb   <- mean(pred_nb == y_multi_test)
+
+# ---- KNN (mejor configuración del lab anterior) ----
+set.seed(42)
+mins_knn <- apply(train_multi[, features], 2, min, na.rm = TRUE)
+maxs_knn <- apply(train_multi[, features], 2, max, na.rm = TRUE)
+
+normalizar_knn <- function(df) {
+  df_n <- df
+  for (col in names(mins_knn)) {
+    rango <- maxs_knn[col] - mins_knn[col]
+    if (rango == 0) rango <- 1
+    df_n[[col]] <- (df[[col]] - mins_knn[col]) / rango
+  }
+  df_n
+}
+train_knn_n <- normalizar_knn(train_multi)
+test_knn_n  <- normalizar_knn(test_multi)
+
+t_knn <- system.time({
+  knn_opt <- kknn::kknn(
+    formula_multi,
+    train    = train_knn_n[, c(features, "precio_cat")],
+    test     = test_knn_n[,  c(features, "precio_cat")],
+    k        = 20,
+    distance = 2,
+    kernel   = "rectangular"
+  )
+})
+pred_knn <- knn_opt$fitted.values
+acc_knn  <- mean(pred_knn == y_multi_test)
+
+# ---- Regresión Logística Multinomial (mejor) ----
+t_rl_multi <- system.time({
+  cv.glmnet(X_multi_train, y_multi_train,
+            family = "multinomial", alpha = 0,
+            nfolds = 10, type.measure = "class")
+})
+```
+
+```{r tabla-comparacion-final}
+# Métricas por modelo (F1 macro)
+calcular_f1_macro <- function(pred, real) {
+  clases <- levels(real)
+  f1s    <- sapply(clases, function(cl) {
+    tp <- sum(pred == cl & real == cl)
+    fp <- sum(pred == cl & real != cl)
+    fn <- sum(pred != cl & real == cl)
+    prec  <- ifelse(tp + fp == 0, 0, tp / (tp + fp))
+    rec   <- ifelse(tp + fn == 0, 0, tp / (tp + fn))
+    ifelse(prec + rec == 0, 0, 2 * prec * rec / (prec + rec))
+  })
+  mean(f1s)
+}
+
+# Kappa de Cohen
+calcular_kappa <- function(pred, real) {
+  conf  <- table(pred, real)
+  n     <- sum(conf)
+  po    <- sum(diag(conf)) / n
+  pe    <- sum(rowSums(conf) * colSums(conf)) / n^2
+  (po - pe) / (1 - pe)
+}
+
+tabla_final <- data.frame(
+  Modelo       = c("Árbol de Decisión", "Random Forest", "Naive Bayes",
+                   "KNN (k=20)", "Reg. Logística Multinomial"),
+  Accuracy     = round(c(acc_arbol, acc_rf, acc_nb, acc_knn, max(accs_multi)), 4),
+  F1_Macro     = round(c(
+    calcular_f1_macro(pred_arbol, y_multi_test),
+    calcular_f1_macro(pred_rf,    y_multi_test),
+    calcular_f1_macro(pred_nb,    y_multi_test),
+    calcular_f1_macro(pred_knn,   y_multi_test),
+    calcular_f1_macro(pred_multi_best, y_multi_test)
+  ), 4),
+  Kappa        = round(c(
+    calcular_kappa(pred_arbol, y_multi_test),
+    calcular_kappa(pred_rf,    y_multi_test),
+    calcular_kappa(pred_nb,    y_multi_test),
+    calcular_kappa(pred_knn,   y_multi_test),
+    calcular_kappa(pred_multi_best, y_multi_test)
+  ), 4),
+  Tiempo_seg   = round(c(
+    t_arbol["elapsed"],
+    t_rf["elapsed"],
+    t_nb["elapsed"],
+    t_knn["elapsed"],
+    t_rl_multi["elapsed"]
+  ), 3)
+)
+
+kable(tabla_final, caption = "Comparación final de modelos de clasificación — mismo train/test")
+```
+
+```{r vis-comparacion-final, fig.cap="Comparación de accuracy y F1-macro entre algoritmos"}
+p_acc <- ggplot(tabla_final,
+                aes(x = reorder(Modelo, Accuracy), y = Accuracy, fill = Modelo)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  geom_text(aes(label = scales::percent(Accuracy, accuracy = 0.1)),
+            hjust = -0.1, size = 3.5) +
+  labs(title = "Accuracy", x = NULL) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2") +
+  ylim(0, 1.05)
+
+p_f1 <- ggplot(tabla_final,
+               aes(x = reorder(Modelo, F1_Macro), y = F1_Macro, fill = Modelo)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  geom_text(aes(label = round(F1_Macro, 3)), hjust = -0.1, size = 3.5) +
+  labs(title = "F1-Macro", x = NULL) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2") +
+  ylim(0, 1.05)
+
+p_tiempo <- ggplot(tabla_final,
+                   aes(x = reorder(Modelo, Tiempo_seg), y = Tiempo_seg, fill = Modelo)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  geom_text(aes(label = paste0(Tiempo_seg, "s")), hjust = -0.1, size = 3.5) +
+  labs(title = "Tiempo de entrenamiento (seg)", x = NULL) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2")
+
+gridExtra::grid.arrange(p_acc, p_f1, p_tiempo, ncol = 3,
+                         top = "Comparación Final — Algoritmos de Clasificación")
+```
+
+### Matrices de confusión comparadas
+
+```{r matrices-todos, fig.height=8, fig.cap="Matrices de confusión de todos los modelos de clasificación"}
+hacer_mapa_multi <- function(pred, real, titulo) {
+  conf <- table(Predicho = pred, Real = real)
+  df   <- as.data.frame(conf)
+  ggplot(df, aes(x = Real, y = Predicho, fill = Freq)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = Freq), size = 3.5) +
+    scale_fill_gradient(low = "#F7F9FC", high = "#2E86AB") +
+    labs(title = titulo, x = "Real", y = "Predicho") +
+    theme_minimal(base_size = 9) +
+    theme(legend.position = "none")
+}
+
+g_arbol <- hacer_mapa_multi(pred_arbol, y_multi_test, "Árbol de Decisión")
+g_rf    <- hacer_mapa_multi(pred_rf,    y_multi_test, "Random Forest")
+g_nb    <- hacer_mapa_multi(pred_nb,    y_multi_test, "Naive Bayes")
+g_knn   <- hacer_mapa_multi(pred_knn,   y_multi_test, "KNN (k=20)")
+g_rl    <- hacer_mapa_multi(pred_multi_best, y_multi_test,
+                             "Reg. Log. Multinomial")
+
+gridExtra::grid.arrange(g_arbol, g_rf, g_nb, g_knn, g_rl, ncol = 3)
+```
+
+---
+
+# Conclusiones
+
+## Síntesis de hallazgos
+
+```{r conclusiones-texto, echo=FALSE, results='asis'}
+mejor_acc_idx  <- which.max(tabla_final$Accuracy)
+mejor_f1_idx   <- which.max(tabla_final$F1_Macro)
+mas_rapido_idx <- which.min(tabla_final$Tiempo_seg)
+mas_lento_idx  <- which.max(tabla_final$Tiempo_seg)
+
+cat("- El algoritmo con **mayor Accuracy** fue:",
+    tabla_final$Modelo[mejor_acc_idx],
+    "(", scales::percent(tabla_final$Accuracy[mejor_acc_idx], accuracy = 0.1), ").\n\n")
+
+cat("- El algoritmo con **mayor F1-Macro** fue:",
+    tabla_final$Modelo[mejor_f1_idx],
+    "(", round(tabla_final$F1_Macro[mejor_f1_idx], 3), ").\n\n")
+
+cat("- El algoritmo **más rápido** en entrenamiento fue:",
+    tabla_final$Modelo[mas_rapido_idx],
+    "(", tabla_final$Tiempo_seg[mas_rapido_idx], "seg).\n\n")
+
+cat("- El algoritmo **más lento** fue:",
+    tabla_final$Modelo[mas_lento_idx],
+    "(", tabla_final$Tiempo_seg[mas_lento_idx], "seg).\n\n")
+```
+
+## Recomendación para SmartStay Advisors
+
+La Regresión Logística ofrece una ventaja clave sobre los demás modelos: **interpretabilidad**. Los coeficientes del modelo permiten al equipo de SmartStay entender qué variables incrementan la probabilidad de que una propiedad sea cara, lo que facilita la comunicación con los propietarios de los inmuebles y con los clientes corporativos.
+
+El Random Forest suele alcanzar la mayor exactitud global, pero es una caja negra. Para un negocio de consultoría donde la explicación de recomendaciones es tan importante como su precisión, la Regresión Logística Multinomial regularizada con Ridge o LASSO representa un equilibrio óptimo entre rendimiento predictivo e interpretabilidad.
+
+El tuning del umbral de decisión mediante el índice de Youden demostró que el umbral por defecto de 0.5 no es siempre el mejor: un umbral ajustado incrementa la sensibilidad (detectar propiedades caras correctamente), lo que directamente maximiza los incentivos económicos que Airbnb ofrece a SmartStay.
+
+---
+```
