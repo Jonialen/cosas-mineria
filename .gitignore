@@ -13,6 +13,15 @@
 *_cache/
 *_files/
 
+# Jupyter
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+
+# Python env
+.venv/
+uv.lock
+
 # Sistema operativo
 .DS_Store
 Thumbs.db
