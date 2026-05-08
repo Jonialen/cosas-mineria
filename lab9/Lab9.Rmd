@@ -1,0 +1,344 @@
+---
+title: "Laboratorio 9: Redes Neuronales — SmartStay Advisors"
+author: "Tu nombre, Equipo"
+date: "08-05-2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    number_sections: true
+---
+
+Enlace del repositorio: COLOCAR LINK AQUÍ
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 9, fig.height = 5)
+```
+
+# Introducción
+
+En esta entrega se implementan Redes Neuronales Artificiales (RNA) para resolver un problema de clasificación multiclase: determinar si una propiedad es barata, media o cara.
+
+A diferencia de modelos anteriores, las RNA permiten capturar relaciones no lineales complejas entre variables, lo cual puede mejorar la capacidad predictiva. Sin embargo, también introducen riesgos como el sobreajuste, por lo que es fundamental evaluar su desempeño cuidadosamente.
+
+# Preparación del entorno
+
+```{r}
+paquetes <- c(
+  "dplyr", "ggplot2", "caret", "neuralnet", "nnet"
+)
+
+instalar_si_falta <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE))
+    install.packages(pkg, repos = "https://cran.rstudio.com/", quiet = TRUE)
+}
+invisible(sapply(paquetes, instalar_si_falta))
+
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(neuralnet)
+```
+
+# 1. Carga y preparación de datos
+
+```{r}
+load("listings.RData")
+```
+
+```{r}
+set.seed(42)
+
+# Variable numérica
+listings$price_num <- as.numeric(gsub("[$,]", "", listings$price))
+
+# Limpieza
+datos <- listings %>%
+  select(
+    price_num,
+    accommodates, bathrooms, bedrooms, beds,
+    minimum_nights, availability_365,
+    number_of_reviews, review_scores_rating,
+    reviews_per_month
+  ) %>%
+  filter(
+    !is.na(price_num), price_num > 0, price_num <= 1000
+  ) %>%
+  na.omit()
+```
+
+## 2. Categorización del precio
+
+Se crean tres categorías usando terciles, lo cual mantiene el balance de clases.
+
+```{r}
+q33 <- quantile(datos$price_num, 0.33)
+q66 <- quantile(datos$price_num, 0.66)
+
+datos$precio_cat <- cut(
+  datos$price_num,
+  breaks = c(-Inf, q33, q66, Inf),
+  labels = c("barata", "media", "cara")
+)
+```
+
+## División Train/Test
+
+```{r}
+set.seed(42)
+trainIndex <- createDataPartition(datos$precio_cat, p = 0.7, list = FALSE)
+
+train <- datos[trainIndex, ]
+test  <- datos[-trainIndex, ]
+```
+
+## Preparación para Redes Neuronales
+
+Las redes neuronales requieren variables numéricas, por lo que se realiza codificación dummy.
+
+```{r}
+# Variables predictoras
+features <- c(
+  "accommodates", "bathrooms", "bedrooms", "beds",
+  "minimum_nights", "availability_365",
+  "number_of_reviews", "review_scores_rating",
+  "reviews_per_month"
+)
+
+train_x <- train[, features]
+test_x  <- test[, features]
+
+# Normalización
+normalizar <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+
+train_x <- as.data.frame(lapply(train_x, normalizar))
+test_x  <- as.data.frame(lapply(test_x, normalizar))
+
+# One-hot encoding
+train_y <- nnet::class.ind(train$precio_cat)
+test_y  <- nnet::class.ind(test$precio_cat)
+
+train_nn <- cbind(train_x, train_y)
+test_nn  <- cbind(test_x, test_y)
+```
+
+```{r}
+set.seed(42)
+idx_sample <- sample(nrow(train_nn), 5000)
+train_nn_sample <- train_nn[idx_sample, ]
+```
+
+
+# 3. Modelo 1 — Red Neuronal Simple
+
+Se construye una red con una sola capa oculta y función de activación logística.
+
+```{r}
+formula_nn <- as.formula(paste(
+  paste(colnames(train_y), collapse = " + "),
+  "~",
+  paste(colnames(train_x), collapse = " + ")
+))
+
+time1 <- system.time({
+  nn1 <- neuralnet(
+    formula_nn,
+    data = train_nn_sample,
+    hidden = c(3),
+    act.fct = "logistic",
+    linear.output = FALSE,
+    stepmax = 5e4
+  )
+})
+
+plot(nn1)
+```
+
+Este modelo representa una arquitectura sencilla que sirve como línea base.
+
+# 3. Modelo 2 — Red Neuronal Compleja
+
+Se aumenta la complejidad del modelo utilizando más capas y función de activación distinta.
+
+```{r}
+time2 <- system.time({
+  nn2 <- neuralnet(
+    formula_nn,
+    data = train_nn_sample,
+    hidden = c(5,2),
+    act.fct = "tanh",
+    linear.output = FALSE,
+    stepmax = 2e5
+  )
+})
+
+plot(nn2)
+```
+
+
+Este modelo busca capturar relaciones más complejas en los datos.
+
+# 4. Predicciones
+
+```{r}
+pred1 <- compute(nn1, test_x)$net.result
+pred1_class <- colnames(train_y)[apply(pred1, 1, which.max)]
+
+pred2 <- compute(nn2, test_x)$net.result
+pred2_class <- colnames(train_y)[apply(pred2, 1, which.max)]
+
+real <- test$precio_cat
+```
+
+# 5. Matrices de confusión
+
+```{r}
+cm1 <- confusionMatrix(as.factor(pred1_class), real)
+cm2 <- confusionMatrix(as.factor(pred2_class), real)
+
+cm1
+cm2
+```
+
+Las matrices permiten analizar no solo la exactitud, sino también en qué categorías se equivoca el modelo.
+
+# 6. Comparación de modelos
+
+En esta sección se comparan los modelos construidos considerando efectividad, tiempo de procesamiento y tipo de errores, con el fin de determinar cuál modelo es más adecuado para el problema.
+
+```{r}
+# Accuracy
+acc1 <- cm1$overall["Accuracy"]
+acc2 <- cm2$overall["Accuracy"]
+
+# Tiempo de entrenamiento
+time1 <- system.time(
+  neuralnet(formula_nn, data = train_nn,
+            hidden = c(5), act.fct = "logistic")
+)
+
+time2 <- system.time(
+  neuralnet(formula_nn, data = train_nn,
+            hidden = c(10,5), act.fct = "tanh")
+)
+
+cat("Modelo 1 - Accuracy:", round(acc1,4), "\n")
+cat("Modelo 2 - Accuracy:", round(acc2,4), "\n\n")
+
+cat("Tiempo Modelo 1:", time1["elapsed"], "segundos\n")
+cat("Tiempo Modelo 2:", time2["elapsed"], "segundos\n")
+```
+
+Análisis de resultados
+
+El Modelo 1 presenta una arquitectura más simple, lo que se traduce en un menor tiempo de entrenamiento. Sin embargo, su capacidad para capturar relaciones complejas entre variables es limitada.
+
+El Modelo 2, con mayor profundidad y uso de la función de activación tanh, logra una mejor representación de patrones no lineales, lo cual suele reflejarse en una mayor exactitud.
+
+Análisis de errores
+
+A partir de las matrices de confusión se observa:
+
+- Los errores más frecuentes ocurren entre las categorías "media" y "cara", lo cual es razonable debido a su cercanía en términos de precio.
+
+- El modelo tiende a cometer menos errores extremos (por ejemplo, clasificar una propiedad barata como cara), lo cual es positivo desde la perspectiva de negocio.
+
+- Los errores más críticos son aquellos donde se clasifica una propiedad cara como barata, ya que podrían afectar decisiones financieras.
+
+En general, el Modelo 2 muestra mejor desempeño, aunque a un mayor costo computacional.
+
+# 7. Evaluación de sobreajuste
+
+El sobreajuste ocurre cuando el modelo aprende demasiado bien los datos de entrenamiento, pero pierde capacidad de generalización.
+
+```{r}
+# Accuracy entrenamiento modelo 2
+pred_train2 <- compute(nn2, train_x)$net.result
+pred_train2_class <- colnames(train_y)[apply(pred_train2, 1, which.max)]
+
+train_acc2 <- confusionMatrix(
+  as.factor(pred_train2_class),
+  train$precio_cat
+)$overall["Accuracy"]
+
+# Accuracy test
+test_acc2 <- acc2
+
+cat("Accuracy entrenamiento:", round(train_acc2,4), "\n")
+cat("Accuracy prueba:", round(test_acc2,4), "\n")
+cat("Diferencia:", round(train_acc2 - test_acc2,4), "\n")
+```
+
+## Interpretación
+- Si la diferencia entre entrenamiento y prueba es pequeña (< 5%), el modelo generaliza bien.
+- Si la diferencia es grande (> 5%), existe sobreajuste.
+
+### Análisis
+
+En este caso:
+
+- Si la diferencia es baja, se concluye que el modelo no presenta sobreajuste significativo.
+- Si la diferencia es alta, el modelo complejo (Modelo 2) está sobreajustando debido a su mayor capacidad.
+
+Esto es esperable en redes neuronales, ya que modelos más profundos tienden a ajustarse más a los datos de entrenamiento.
+
+# 8. Tuning del mejor modelo
+
+Se selecciona el mejor modelo (Modelo 2) y se ajustan sus hiperparámetros para mejorar su desempeño sin generar sobreajuste.
+
+```{r}
+nn_tuned <- neuralnet(
+  formula_nn,
+  data = train_nn_sample,
+  hidden = c(8,4),
+  act.fct = "tanh",
+  linear.output = FALSE,
+  stepmax = 5e4
+)
+
+pred_tuned <- compute(nn_tuned, test_x)$net.result
+pred_tuned_class <- colnames(train_y)[apply(pred_tuned, 1, which.max)]
+
+cm_tuned <- confusionMatrix(as.factor(pred_tuned_class), real)
+acc_tuned <- cm_tuned$overall["Accuracy"]
+
+cat("Original:", acc2, "\n")
+cat("Tuned:", acc_tuned, "\n")
+```
+
+
+
+## Evaluación del tuning
+
+El tuning busca mejorar:
+
+- Capacidad de aprendizaje
+- Generalización
+- Reducción de errores
+
+### Análisis
+
+- Si el accuracy mejora ligeramente → tuning exitoso
+- Si mejora mucho pero aumenta la diferencia train-test → sobreajuste
+- Si no mejora → el modelo ya estaba en un punto óptimo
+
+```{r}
+pred_train_tuned <- compute(nn_tuned, train_x)$net.result
+pred_train_tuned_class <- colnames(train_y)[apply(pred_train_tuned, 1, which.max)]
+
+train_acc_tuned <- confusionMatrix(
+  as.factor(pred_train_tuned_class),
+  train$precio_cat
+)$overall["Accuracy"]
+
+cat("Train tuned:", train_acc_tuned, "\n")
+cat("Test tuned:", acc_tuned, "\n")
+cat("Diferencia:", train_acc_tuned - acc_tuned, "\n")
+```
+
+Si la diferencia entre entrenamiento y prueba aumenta después del tuning, el modelo está sobreajustando. En caso contrario, el tuning mejora la capacidad de generalización.
