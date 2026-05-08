@@ -173,7 +173,7 @@ time2 <- system.time({
     hidden = c(5,2),
     act.fct = "tanh",
     linear.output = FALSE,
-    stepmax = 2e5
+    stepmax = 2e2
   )
 })
 
