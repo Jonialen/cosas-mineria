@@ -1,7 +1,7 @@
 ---
-title: "Laboratorio 9: Redes Neuronales — SmartStay Advisors"
-author: "Tu nombre, Equipo"
-date: "08-05-2026"
+title: "Laboratorio 9: Redes Neuronales Artificiales — SmartStay Advisors"
+author: "Jonathan Díaz, Martín Pérez, Karen Toledo"
+date: "2026-05-10"
 output:
   html_document:
     toc: true
@@ -11,334 +11,716 @@ output:
     number_sections: true
 ---
 
-Enlace del repositorio: COLOCAR LINK AQUÍ
+Enlace del repositorio: https://github.com/Jonialen/cosas-mineria
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
-                      fig.width = 9, fig.height = 5)
-```
+if (!dir.exists(".Rlib")) dir.create(".Rlib", recursive = TRUE)
+.libPaths(c(normalizePath(".Rlib", mustWork = FALSE), .libPaths()))
 
-# Introducción
-
-En esta entrega se implementan Redes Neuronales Artificiales (RNA) para resolver un problema de clasificación multiclase: determinar si una propiedad es barata, media o cara.
-
-A diferencia de modelos anteriores, las RNA permiten capturar relaciones no lineales complejas entre variables, lo cual puede mejorar la capacidad predictiva. Sin embargo, también introducen riesgos como el sobreajuste, por lo que es fundamental evaluar su desempeño cuidadosamente.
-
-# Preparación del entorno
-
-```{r}
 paquetes <- c(
-  "dplyr", "ggplot2", "caret", "neuralnet", "nnet"
+  "dplyr", "ggplot2", "tidyr", "knitr", "scales", "gridExtra",
+  "caret", "e1071", "rpart", "randomForest", "FNN",
+  "neuralnet", "nnet", "Metrics", "rmarkdown"
 )
 
 instalar_si_falta <- function(pkg) {
-  if (!requireNamespace(pkg, quietly = TRUE))
-    install.packages(pkg, repos = "https://cran.rstudio.com/", quiet = TRUE)
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg, lib = ".Rlib", repos = "https://cran.rstudio.com/", quiet = TRUE)
+  }
 }
-invisible(sapply(paquetes, instalar_si_falta))
+invisible(lapply(paquetes, instalar_si_falta))
 
 library(dplyr)
 library(ggplot2)
+library(tidyr)
+library(knitr)
+library(scales)
+library(gridExtra)
 library(caret)
+library(e1071)
+library(rpart)
+library(randomForest)
+library(FNN)
 library(neuralnet)
-```
+library(nnet)
+library(Metrics)
 
-# 1. Carga y preparación de datos
-
-```{r}
-load("listings.RData")
-```
-
-```{r}
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE,
+  fig.width = 9, fig.height = 5
+)
 set.seed(42)
-
-# Variable numérica
-listings$price_num <- as.numeric(gsub("[$,]", "", listings$price))
-
-# Limpieza
-datos <- listings %>%
-  select(
-    price_num,
-    accommodates, bathrooms, bedrooms, beds,
-    minimum_nights, availability_365,
-    number_of_reviews, review_scores_rating,
-    reviews_per_month
-  ) %>%
-  filter(
-    !is.na(price_num), price_num > 0, price_num <= 1000
-  ) %>%
-  na.omit()
 ```
 
-## 2. Categorización del precio
+# Resumen ejecutivo
 
-Se crean tres categorías usando terciles, lo cual mantiene el balance de clases.
+SmartStay Advisors necesita identificar qué algoritmos permiten **clasificar** inmuebles en categorías de precio (*barata*, *media*, *cara*) y **predecir** el precio numérico con el mejor equilibrio entre precisión, costo computacional y capacidad de generalización. En esta entrega se construyen dos redes neuronales para clasificación y dos para regresión, se analiza el riesgo de sobreajuste, se tunean los mejores modelos de RNA y se comparan contra los algoritmos trabajados en entregas previas usando el **mismo conjunto de entrenamiento y prueba**.
 
-```{r}
+## Hallazgos principales
+
+- Para **clasificación**, la mejor red neuronal fue la **RNA tuneada**, pero el mejor desempeño global lo obtuvo **Random Forest**.
+- Para **regresión**, la mejor red neuronal también fue la **RNA tuneada**, aunque quedó por debajo de **Random Forest**, árbol de regresión y KNN.
+- El análisis de sobreajuste muestra que el **tuning** fue clave para estabilizar los modelos neuronales, especialmente en clasificación.
+- Todas las comparaciones se realizaron bajo las **mismas condiciones experimentales**, reutilizando la lógica de limpieza y la misma partición entrenamiento/prueba de laboratorios anteriores.
+
+# Diseño experimental y preparación de los datos
+
+## Carga del conjunto de datos
+
+```{r cargar-datos}
+ruta_listings <- c(
+  "listings.RData",
+  "../lab9/listings.RData",
+  "../lab8/listings.RData",
+  "../lab7/listings.RData",
+  "../lab 6/listings.RData"
+)
+archivo_listings <- ruta_listings[file.exists(ruta_listings)][1]
+stopifnot(!is.na(archivo_listings))
+load(archivo_listings)
+cat("Archivo cargado:", archivo_listings, "\n")
+cat("Dimensiones originales:", dim(listings), "\n")
+```
+
+## Limpieza, selección de variables y misma partición usada en labs anteriores
+
+Para que la comparación entre algoritmos sea válida, se conserva la misma lógica de limpieza, la misma semilla (`set.seed(42)`) y el mismo esquema de división **70% entrenamiento / 30% prueba** usado en las entregas previas.
+
+```{r limpieza-datos}
+listings$price_num <- as.numeric(gsub("[$,]", "", listings$price))
+listings$superhost <- ifelse(listings$host_is_superhost == "t", 1, 0)
+listings$instant_book <- ifelse(listings$instant_bookable == "t", 1, 0)
+listings$es_entire_home <- ifelse(listings$room_type == "Entire home/apt", 1, 0)
+listings$es_private_room <- ifelse(listings$room_type == "Private room", 1, 0)
+
+features <- c(
+  "accommodates", "bathrooms", "bedrooms", "beds",
+  "minimum_nights", "availability_365", "number_of_reviews",
+  "review_scores_rating", "review_scores_cleanliness",
+  "review_scores_checkin", "review_scores_communication",
+  "review_scores_location", "review_scores_value",
+  "latitude", "longitude", "calculated_host_listings_count",
+  "reviews_per_month", "superhost", "instant_book",
+  "es_entire_home", "es_private_room"
+)
+
+datos <- listings %>%
+  select(price_num, all_of(features)) %>%
+  filter(
+    !is.na(price_num),
+    price_num > 0,
+    price_num <= 1000,
+    !is.na(bathrooms),
+    !is.na(bedrooms),
+    !is.na(beds),
+    !is.na(review_scores_rating),
+    !is.na(review_scores_cleanliness),
+    !is.na(review_scores_checkin),
+    !is.na(review_scores_communication),
+    !is.na(review_scores_location),
+    !is.na(review_scores_value),
+    !is.na(reviews_per_month)
+  )
+
+cat("Filas después de limpieza:", nrow(datos), "\n")
+```
+
+## Construcción de la variable respuesta y partición experimental
+
+```{r categorizacion-y-split}
 q33 <- quantile(datos$price_num, 0.33)
 q66 <- quantile(datos$price_num, 0.66)
 
 datos$precio_cat <- cut(
   datos$price_num,
   breaks = c(-Inf, q33, q66, Inf),
-  labels = c("barata", "media", "cara")
+  labels = c("barata", "media", "cara"),
+  right = TRUE
 )
-```
 
-## División Train/Test
+datos$precio_cat <- factor(datos$precio_cat, levels = c("barata", "media", "cara"))
 
-```{r}
 set.seed(42)
-trainIndex <- createDataPartition(datos$precio_cat, p = 0.7, list = FALSE)
+n_muestra <- min(15000, nrow(datos))
+idx_muestra <- datos %>%
+  mutate(row_id = row_number()) %>%
+  group_by(precio_cat) %>%
+  slice_sample(prop = n_muestra / nrow(datos)) %>%
+  pull(row_id)
+if (length(idx_muestra) > n_muestra) idx_muestra <- idx_muestra[1:n_muestra]
 
-train <- datos[trainIndex, ]
-test  <- datos[-trainIndex, ]
+datos_sample <- datos[idx_muestra, ]
+
+set.seed(42)
+idx_train <- createDataPartition(datos_sample$precio_cat, p = 0.70, list = FALSE)
+train <- datos_sample[idx_train, ]
+test  <- datos_sample[-idx_train, ]
+
+cat("Umbral barata/media:", round(q33, 2), "\n")
+cat("Umbral media/cara:", round(q66, 2), "\n")
+cat("Train:", nrow(train), "| Test:", nrow(test), "\n")
+
+kable(as.data.frame(table(train$precio_cat)),
+      col.names = c("Categoría", "Frecuencia"),
+      caption = "Distribución de categorías en entrenamiento")
 ```
 
-## Preparación para Redes Neuronales
+## Escalamiento y funciones auxiliares
 
-Las redes neuronales requieren variables numéricas, por lo que se realiza codificación dummy.
-
-```{r}
-# Variables predictoras
-features <- c(
-  "accommodates", "bathrooms", "bedrooms", "beds",
-  "minimum_nights", "availability_365",
-  "number_of_reviews", "review_scores_rating",
-  "reviews_per_month"
-)
-
-train_x <- train[, features]
-test_x  <- test[, features]
-
-# Normalización
-normalizar <- function(x) {
-  (x - min(x)) / (max(x) - min(x))
+```{r helpers}
+normalizar_minmax <- function(df, mins, maxs) {
+  out <- df
+  for (col in names(mins)) {
+    rango <- maxs[col] - mins[col]
+    if (is.na(rango) || rango == 0) rango <- 1
+    out[[col]] <- (df[[col]] - mins[col]) / rango
+  }
+  out
 }
 
-train_x <- as.data.frame(lapply(train_x, normalizar))
-test_x  <- as.data.frame(lapply(test_x, normalizar))
+desnormalizar <- function(x, min_val, max_val) {
+  x * (max_val - min_val) + min_val
+}
 
-# One-hot encoding
-train_y <- nnet::class.ind(train$precio_cat)
-test_y  <- nnet::class.ind(test$precio_cat)
+metricas_clasificacion <- function(real, pred, nombre, tiempo) {
+  cm <- confusionMatrix(pred, real)
+  tibble(
+    Modelo = nombre,
+    Accuracy = unname(cm$overall["Accuracy"]),
+    Kappa = unname(cm$overall["Kappa"]),
+    Tiempo_seg = as.numeric(tiempo["elapsed"])
+  )
+}
 
-train_nn <- cbind(train_x, train_y)
-test_nn  <- cbind(test_x, test_y)
+macro_f1 <- function(real, pred) {
+  clases <- levels(real)
+  f1s <- sapply(clases, function(cl) {
+    tp <- sum(pred == cl & real == cl)
+    fp <- sum(pred == cl & real != cl)
+    fn <- sum(pred != cl & real == cl)
+    precision <- ifelse(tp + fp == 0, 0, tp / (tp + fp))
+    recall <- ifelse(tp + fn == 0, 0, tp / (tp + fn))
+    ifelse(precision + recall == 0, 0, 2 * precision * recall / (precision + recall))
+  })
+  mean(f1s)
+}
+
+metricas_regresion <- function(real, pred, nombre, tiempo) {
+  tibble(
+    Modelo = nombre,
+    RMSE = Metrics::rmse(real, pred),
+    MAE = Metrics::mae(real, pred),
+    R2 = 1 - sum((real - pred)^2) / sum((real - mean(real))^2),
+    Tiempo_seg = as.numeric(tiempo["elapsed"])
+  )
+}
+
+mins_x <- sapply(train[, features], min)
+maxs_x <- sapply(train[, features], max)
+
+train_x <- normalizar_minmax(train[, features], mins_x, maxs_x)
+test_x  <- normalizar_minmax(test[, features],  mins_x, maxs_x)
+
+train_y_class <- class.ind(train$precio_cat)
+test_y_class  <- class.ind(test$precio_cat)
+
+train_nn_class <- cbind(train_x, train_y_class)
+test_nn_class  <- cbind(test_x, test_y_class)
+
+price_min <- min(train$price_num)
+price_max <- max(train$price_num)
+train_y_reg <- (train$price_num - price_min) / (price_max - price_min)
+test_y_reg  <- (test$price_num  - price_min) / (price_max - price_min)
+
+train_nn_reg <- cbind(train_x, price_scaled = train_y_reg)
+test_nn_reg  <- cbind(test_x,  price_scaled = test_y_reg)
+
+form_clf <- as.formula(
+  paste(paste(colnames(train_y_class), collapse = " + "), "~", paste(colnames(train_x), collapse = " + "))
+)
+form_reg <- as.formula(
+  paste("price_scaled ~", paste(colnames(train_x), collapse = " + "))
+)
 ```
 
-```{r}
+# Modelado neuronal para clasificación del precio
+
+## Especificación de los modelos
+
+Se construyeron dos arquitecturas distintas:
+
+- **RNA C1**: red neuronal multinomial con `size = 3` y sin penalización (`decay = 0.00`).
+- **RNA C2**: red neuronal multinomial con `size = 5` y regularización ligera (`decay = 0.01`).
+
+Para que el entrenamiento sea manejable con `neuralnet`, se usa una submuestra estratificada del conjunto de entrenamiento; sin embargo, la evaluación se hace sobre **todo el conjunto de prueba**.
+
+```{r muestra-rna-clasificacion}
 set.seed(42)
-idx_sample <- sample(nrow(train_nn), 5000)
-train_nn_sample <- train_nn[idx_sample, ]
+train_sub_idx <- train %>%
+  mutate(row_id = row_number()) %>%
+  group_by(precio_cat) %>%
+  slice_sample(n = min(100, min(table(train$precio_cat)))) %>%
+  pull(row_id)
+
+train_sub_class <- train_nn_class[train_sub_idx, ]
+train_sub_real  <- train[train_sub_idx, ]
+cat("Observaciones para entrenamiento de RNA de clasificación:", nrow(train_sub_class), "\n")
 ```
 
+```{r rna-clasificacion-modelos, cache=TRUE}
+train_sub_real <- train[train_sub_idx, ]
 
-# 3. Modelo 1 — Red Neuronal Simple
+train_sub_x <- as.matrix(train_x[train_sub_idx, ])
+train_sub_y <- class.ind(train_sub_real$precio_cat)
 
-Se construye una red con una sola capa oculta y función de activación logística.
-
-```{r}
-formula_nn <- as.formula(paste(
-  paste(colnames(train_y), collapse = " + "),
-  "~",
-  paste(colnames(train_x), collapse = " + ")
-))
-
-time1 <- system.time({
-  nn1 <- neuralnet(
-    formula_nn,
-    data = train_nn_sample,
-    hidden = c(3),
-    act.fct = "logistic",
-    linear.output = FALSE,
-    stepmax = 5e4
+time_c1 <- system.time({
+  rna_c1 <- nnet::nnet(
+    x = train_sub_x,
+    y = train_sub_y,
+    size = 3,
+    decay = 0.00,
+    maxit = 200,
+    trace = FALSE,
+    softmax = TRUE
   )
 })
 
-plot(nn1)
+time_c2 <- system.time({
+  rna_c2 <- nnet::nnet(
+    x = train_sub_x,
+    y = train_sub_y,
+    size = 5,
+    decay = 0.01,
+    maxit = 250,
+    trace = FALSE,
+    softmax = TRUE
+  )
+})
 ```
 
-Este modelo representa una arquitectura sencilla que sirve como línea base.
+```{r rna-clasificacion-predicciones}
+pred_c1_train_prob <- predict(rna_c1, newdata = train_x[train_sub_idx, ], type = "raw")
+pred_c1_test_prob  <- predict(rna_c1, newdata = test_x, type = "raw")
+pred_c2_train_prob <- predict(rna_c2, newdata = train_x[train_sub_idx, ], type = "raw")
+pred_c2_test_prob  <- predict(rna_c2, newdata = test_x, type = "raw")
 
-# 3. Modelo 2 — Red Neuronal Compleja
+pred_c1_train <- factor(colnames(train_y_class)[max.col(pred_c1_train_prob)], levels = levels(train$precio_cat))
+pred_c1_test  <- factor(colnames(train_y_class)[max.col(pred_c1_test_prob)], levels = levels(train$precio_cat))
+pred_c2_train <- factor(colnames(train_y_class)[max.col(pred_c2_train_prob)], levels = levels(train$precio_cat))
+pred_c2_test  <- factor(colnames(train_y_class)[max.col(pred_c2_test_prob)], levels = levels(train$precio_cat))
 
-Se aumenta la complejidad del modelo utilizando más capas y función de activación distinta.
+acc_c1_train <- mean(pred_c1_train == train_sub_real$precio_cat)
+acc_c1_test  <- mean(pred_c1_test  == test$precio_cat)
+acc_c2_train <- mean(pred_c2_train == train_sub_real$precio_cat)
+acc_c2_test  <- mean(pred_c2_test  == test$precio_cat)
 
-```{r}
-time2 <- system.time({
-  nn2 <- neuralnet(
-    formula_nn,
-    data = train_nn_sample,
-    hidden = c(5,2),
-    act.fct = "tanh",
-    linear.output = FALSE,
-    stepmax = 2e2
+res_clf_rna <- bind_rows(
+  metricas_clasificacion(test$precio_cat, pred_c1_test, "RNA C1: hidden=3, decay=0.00", time_c1),
+  metricas_clasificacion(test$precio_cat, pred_c2_test, "RNA C2: hidden=5, decay=0.01", time_c2)
+) %>%
+  mutate(
+    F1_Macro = c(macro_f1(test$precio_cat, pred_c1_test), macro_f1(test$precio_cat, pred_c2_test)),
+    Accuracy_Train = c(acc_c1_train, acc_c2_train),
+    Gap_Overfit = Accuracy_Train - Accuracy
+  )
+
+kable(res_clf_rna %>% mutate(across(where(is.numeric), ~round(.x, 4))),
+      caption = "Desempeño de las redes neuronales de clasificación")
+```
+
+## Evaluación de desempeño y matrices de confusión
+
+```{r matrices-confusion-clasificacion, fig.width=11, fig.height=4}
+cm_c1 <- confusionMatrix(pred_c1_test, test$precio_cat)
+cm_c2 <- confusionMatrix(pred_c2_test, test$precio_cat)
+
+cm_c1$table
+cm_c2$table
+```
+
+## Interpretación de errores y análisis de sobreajuste
+
+En ambos modelos los errores más frecuentes suelen concentrarse entre las clases **media** y **cara**, que son las categorías con fronteras más cercanas en términos de precio. El error más costoso para SmartStay sería clasificar una propiedad **cara como barata**, porque puede provocar recomendaciones demasiado agresivas en precio y distorsionar la estrategia comercial.
+
+El indicador de sobreajuste se evalúa con la brecha entre accuracy de entrenamiento y accuracy de prueba. Una brecha pequeña indica que el modelo generaliza razonablemente bien; una brecha grande sugiere que la red memorizó patrones del subconjunto de entrenamiento.
+
+## Optimización del mejor modelo de clasificación
+
+Para mejorar el mejor enfoque de clasificación sin sobreajustar, se ajustó una red neuronal usando validación cruzada sobre los hiperparámetros `size` y `decay`.
+
+```{r tuning-clasificacion, cache=TRUE}
+ctrl_clf <- trainControl(method = "cv", number = 3)
+
+grid_clf <- expand.grid(
+  size = c(3, 5),
+  decay = c(0.0, 0.01)
+)
+
+time_clf_tuned <- system.time({
+  rna_clf_tuned <- caret::train(
+    x = train_x,
+    y = train$precio_cat,
+    method = "nnet",
+    trControl = ctrl_clf,
+    tuneGrid = grid_clf,
+    trace = FALSE,
+    maxit = 150
   )
 })
 
-plot(nn2)
+pred_clf_tuned_train <- predict(rna_clf_tuned, newdata = train_x)
+pred_clf_tuned_test  <- predict(rna_clf_tuned, newdata = test_x)
+
+res_clf_tuned <- metricas_clasificacion(test$precio_cat, pred_clf_tuned_test,
+                                        "RNA tuneada (nnet)", time_clf_tuned) %>%
+  mutate(
+    F1_Macro = macro_f1(test$precio_cat, pred_clf_tuned_test),
+    Accuracy_Train = mean(pred_clf_tuned_train == train$precio_cat),
+    Gap_Overfit = Accuracy_Train - Accuracy
+  )
+
+kable(rna_clf_tuned$results %>% arrange(desc(Accuracy)) %>% mutate(across(where(is.numeric), ~round(.x, 4))),
+      caption = "Resultados de tuning para la RNA de clasificación")
+
+kable(res_clf_tuned %>% mutate(across(where(is.numeric), ~round(.x, 4))),
+      caption = "Desempeño del modelo de clasificación tuneado")
+
+rna_clf_tuned$bestTune
 ```
 
+# Modelado neuronal para regresión del precio
 
-Este modelo busca capturar relaciones más complejas en los datos.
+## Especificación de los modelos
 
-# 4. Predicciones
+Para predecir el precio numérico se entrenaron dos redes neuronales con topologías diferentes y distinto nivel de regularización:
 
-```{r}
-pred1 <- compute(nn1, test_x)$net.result
-pred1_class <- colnames(train_y)[apply(pred1, 1, which.max)]
+- **RNA R1**: red neuronal de regresión con `size = 4` y sin penalización (`decay = 0.00`).
+- **RNA R2**: red neuronal de regresión con `size = 6` y regularización ligera (`decay = 0.01`).
 
-pred2 <- compute(nn2, test_x)$net.result
-pred2_class <- colnames(train_y)[apply(pred2, 1, which.max)]
+```{r rna-regresion-modelos, cache=TRUE}
+train_sub_reg_idx <- sample(seq_len(nrow(train_nn_reg)), min(300, nrow(train_nn_reg)))
 
-real <- test$precio_cat
+train_sub_reg_x <- as.matrix(train_x[train_sub_reg_idx, ])
+train_sub_reg_y <- train$price_num[train_sub_reg_idx]
+
+time_r1 <- system.time({
+  rna_r1 <- nnet::nnet(
+    x = train_sub_reg_x,
+    y = train_sub_reg_y,
+    size = 4,
+    decay = 0.00,
+    linout = TRUE,
+    maxit = 250,
+    trace = FALSE
+  )
+})
+
+time_r2 <- system.time({
+  rna_r2 <- nnet::nnet(
+    x = train_sub_reg_x,
+    y = train_sub_reg_y,
+    size = 6,
+    decay = 0.01,
+    linout = TRUE,
+    maxit = 300,
+    trace = FALSE
+  )
+})
 ```
 
-# 5. Matrices de confusión
+```{r rna-regresion-predicciones}
+pred_r1_train <- as.numeric(predict(rna_r1, newdata = train_x))
+pred_r1_test  <- as.numeric(predict(rna_r1, newdata = test_x))
+pred_r2_train <- as.numeric(predict(rna_r2, newdata = train_x))
+pred_r2_test  <- as.numeric(predict(rna_r2, newdata = test_x))
 
-```{r}
-cm1 <- confusionMatrix(as.factor(pred1_class), real)
-cm2 <- confusionMatrix(as.factor(pred2_class), real)
+res_reg_rna <- bind_rows(
+  metricas_regresion(test$price_num, pred_r1_test, "RNA R1: hidden=4, decay=0.00", time_r1),
+  metricas_regresion(test$price_num, pred_r2_test, "RNA R2: hidden=6, decay=0.01", time_r2)
+) %>%
+  mutate(
+    RMSE_Train = c(Metrics::rmse(train$price_num, pred_r1_train), Metrics::rmse(train$price_num, pred_r2_train)),
+    Gap_Overfit = RMSE - RMSE_Train
+  )
 
-cm1
-cm2
+kable(res_reg_rna %>% mutate(across(where(is.numeric), ~round(.x, 4))),
+      caption = "Desempeño de las redes neuronales de regresión")
 ```
 
-Las matrices permiten analizar no solo la exactitud, sino también en qué categorías se equivoca el modelo.
+## Diagnóstico de ajuste y generalización
 
-# 6. Comparación de modelos
+Para regresión, el sobreajuste se evalúa observando la diferencia entre el error de entrenamiento y el error de prueba. Si el RMSE de entrenamiento es muy bajo pero el de prueba crece demasiado, el modelo está capturando ruido en lugar de una relación estable.
 
-En esta sección se comparan los modelos construidos considerando efectividad, tiempo de procesamiento y tipo de errores, con el fin de determinar cuál modelo es más adecuado para el problema.
+## Optimización del mejor modelo de regresión
 
-```{r}
-# Accuracy
-acc1 <- cm1$overall["Accuracy"]
-acc2 <- cm2$overall["Accuracy"]
+```{r tuning-regresion, cache=TRUE}
+ctrl_reg <- trainControl(method = "cv", number = 3)
 
-# Tiempo de entrenamiento
-time1 <- system.time(
-  neuralnet(formula_nn, data = train_nn,
-            hidden = c(5), act.fct = "logistic")
+grid_reg <- expand.grid(
+  size = c(3, 5),
+  decay = c(0.0, 0.01)
 )
 
-time2 <- system.time(
-  neuralnet(formula_nn, data = train_nn,
-            hidden = c(10,5), act.fct = "tanh")
+time_reg_tuned <- system.time({
+  rna_reg_tuned <- caret::train(
+    x = train_x,
+    y = train$price_num,
+    method = "nnet",
+    linout = TRUE,
+    trControl = ctrl_reg,
+    tuneGrid = grid_reg,
+    trace = FALSE,
+    maxit = 180
+  )
+})
+
+pred_reg_tuned_train <- predict(rna_reg_tuned, newdata = train_x)
+pred_reg_tuned_test  <- predict(rna_reg_tuned, newdata = test_x)
+
+res_reg_tuned <- metricas_regresion(test$price_num, pred_reg_tuned_test,
+                                    "RNA regresión tuneada (nnet)", time_reg_tuned) %>%
+  mutate(
+    RMSE_Train = Metrics::rmse(train$price_num, pred_reg_tuned_train),
+    Gap_Overfit = RMSE - RMSE_Train
+  )
+
+kable(rna_reg_tuned$results %>% arrange(RMSE) %>% mutate(across(where(is.numeric), ~round(.x, 4))),
+      caption = "Resultados de tuning para la RNA de regresión")
+
+kable(res_reg_tuned %>% mutate(across(where(is.numeric), ~round(.x, 4))),
+      caption = "Desempeño del modelo de regresión tuneado")
+
+rna_reg_tuned$bestTune
+```
+
+## Curva de aprendizaje del mejor modelo de regresión
+
+```{r curva-aprendizaje, cache=TRUE}
+fracciones <- c(0.10, 0.25, 0.40, 0.55, 0.70, 0.85, 1.00)
+learning_curve <- lapply(fracciones, function(frac) {
+  set.seed(42)
+  idx <- sample(seq_len(nrow(train_x)), size = floor(frac * nrow(train_x)))
+  modelo_tmp <- nnet::nnet(
+    x = as.matrix(train_x[idx, ]),
+    y = train$price_num[idx],
+    size = rna_reg_tuned$bestTune$size,
+    decay = rna_reg_tuned$bestTune$decay,
+    linout = TRUE,
+    trace = FALSE,
+    maxit = 180
+  )
+  pred_train_tmp <- predict(modelo_tmp, as.matrix(train_x[idx, ]))
+  pred_test_tmp  <- predict(modelo_tmp, as.matrix(test_x))
+  tibble(
+    Fraccion = frac,
+    N = length(idx),
+    RMSE_Train = Metrics::rmse(train$price_num[idx], pred_train_tmp),
+    RMSE_Test = Metrics::rmse(test$price_num, pred_test_tmp)
+  )
+}) %>% bind_rows()
+
+kable(learning_curve %>% mutate(across(where(is.numeric), ~round(.x, 4))),
+      caption = "Curva de aprendizaje del mejor modelo de regresión")
+
+ggplot(learning_curve, aes(x = N)) +
+  geom_line(aes(y = RMSE_Train, color = "Train"), linewidth = 1) +
+  geom_line(aes(y = RMSE_Test, color = "Test"), linewidth = 1) +
+  geom_point(aes(y = RMSE_Train, color = "Train"), size = 2) +
+  geom_point(aes(y = RMSE_Test, color = "Test"), size = 2) +
+  scale_color_manual(values = c("Train" = "#2C7FB8", "Test" = "#D95F0E")) +
+  labs(
+    title = "Curva de aprendizaje — mejor RNA de regresión",
+    x = "Número de observaciones de entrenamiento",
+    y = "RMSE",
+    color = NULL
+  ) +
+  theme_minimal()
+```
+
+Si las curvas de entrenamiento y prueba convergen gradualmente sin separarse demasiado, hay evidencia de que el modelo puede mejorar al recibir más datos sin caer en un sobreajuste severo. Si la brecha se vuelve grande, el modelo está ganando varianza más rápido que capacidad real de generalización.
+
+# Comparación con algoritmos de entregas anteriores
+
+## Comparación para clasificación
+
+```{r comparacion-clasificacion, cache=TRUE}
+train_clf_model <- data.frame(train_x, precio_cat = train$precio_cat)
+test_clf_model  <- data.frame(test_x,  precio_cat = test$precio_cat)
+
+# Árbol de decisión
+ctime_tree <- system.time({
+  mod_tree <- rpart(precio_cat ~ ., data = train_clf_model, method = "class", cp = 0.001)
+})
+pred_tree_train <- predict(mod_tree, train_clf_model, type = "class")
+pred_tree_test  <- predict(mod_tree, test_clf_model, type = "class")
+
+# Random Forest
+ctime_rf <- system.time({
+  mod_rf <- randomForest(precio_cat ~ ., data = train_clf_model, ntree = 100)
+})
+pred_rf_train <- predict(mod_rf, train_clf_model)
+pred_rf_test  <- predict(mod_rf, test_clf_model)
+
+# Naive Bayes
+ctime_nb <- system.time({
+  mod_nb <- naiveBayes(precio_cat ~ ., data = train_clf_model)
+})
+pred_nb_train <- predict(mod_nb, train_clf_model)
+pred_nb_test  <- predict(mod_nb, test_clf_model)
+
+# KNN
+ctime_knn <- system.time({
+  pred_knn_test <- class::knn(train = train_x, test = test_x, cl = train$precio_cat, k = 20)
+})
+pred_knn_train <- class::knn(train = train_x, test = train_x, cl = train$precio_cat, k = 20)
+
+# Regresión logística multinomial
+ctime_log <- system.time({
+  mod_log <- nnet::multinom(precio_cat ~ ., data = train_clf_model, trace = FALSE)
+})
+pred_log_train <- predict(mod_log, train_clf_model)
+pred_log_test  <- predict(mod_log, test_clf_model)
+
+# SVM radial
+ctime_svm <- system.time({
+  mod_svm <- e1071::svm(precio_cat ~ ., data = train_clf_model, kernel = "radial", cost = 1,
+                        gamma = 1 / ncol(train_x), scale = FALSE)
+})
+pred_svm_train <- predict(mod_svm, train_clf_model)
+pred_svm_test  <- predict(mod_svm, test_clf_model)
+
+# RNA tuneada
+pred_rna_train <- pred_clf_tuned_train
+pred_rna_test  <- pred_clf_tuned_test
+
+tabla_clf_final <- bind_rows(
+  metricas_clasificacion(test$precio_cat, pred_tree_test, "Árbol de decisión", ctime_tree) %>%
+    mutate(F1_Macro = macro_f1(test$precio_cat, pred_tree_test), Accuracy_Train = mean(pred_tree_train == train$precio_cat)),
+  metricas_clasificacion(test$precio_cat, pred_rf_test, "Random Forest", ctime_rf) %>%
+    mutate(F1_Macro = macro_f1(test$precio_cat, pred_rf_test), Accuracy_Train = mean(pred_rf_train == train$precio_cat)),
+  metricas_clasificacion(test$precio_cat, pred_nb_test, "Naive Bayes", ctime_nb) %>%
+    mutate(F1_Macro = macro_f1(test$precio_cat, pred_nb_test), Accuracy_Train = mean(pred_nb_train == train$precio_cat)),
+  metricas_clasificacion(test$precio_cat, pred_knn_test, "KNN (k = 20)", ctime_knn) %>%
+    mutate(F1_Macro = macro_f1(test$precio_cat, pred_knn_test), Accuracy_Train = mean(pred_knn_train == train$precio_cat)),
+  metricas_clasificacion(test$precio_cat, pred_log_test, "Regresión logística multinomial", ctime_log) %>%
+    mutate(F1_Macro = macro_f1(test$precio_cat, pred_log_test), Accuracy_Train = mean(pred_log_train == train$precio_cat)),
+  metricas_clasificacion(test$precio_cat, pred_svm_test, "SVM radial", ctime_svm) %>%
+    mutate(F1_Macro = macro_f1(test$precio_cat, pred_svm_test), Accuracy_Train = mean(pred_svm_train == train$precio_cat)),
+  metricas_clasificacion(test$precio_cat, pred_rna_test, "RNA tuneada", time_clf_tuned) %>%
+    mutate(F1_Macro = macro_f1(test$precio_cat, pred_rna_test), Accuracy_Train = mean(pred_rna_train == train$precio_cat))
+) %>%
+  mutate(Gap_Overfit = Accuracy_Train - Accuracy) %>%
+  arrange(desc(Accuracy))
+
+kable(tabla_clf_final %>% mutate(across(where(is.numeric), ~round(.x, 4))),
+      caption = "Comparación final de modelos de clasificación")
+```
+
+## Comparación para regresión
+
+```{r comparacion-regresion, cache=TRUE}
+train_reg_model <- data.frame(train_x, price_num = train$price_num)
+test_reg_model  <- data.frame(test_x,  price_num = test$price_num)
+
+# Regresión lineal
+rtime_lm <- system.time({
+  mod_lm <- lm(price_num ~ ., data = train_reg_model)
+})
+pred_lm_train <- predict(mod_lm, train_reg_model)
+pred_lm_test  <- predict(mod_lm, test_reg_model)
+
+# Árbol de regresión
+rtime_tree <- system.time({
+  mod_rtree <- rpart(price_num ~ ., data = train_reg_model, method = "anova", cp = 0.001)
+})
+pred_rtree_train <- predict(mod_rtree, train_reg_model)
+pred_rtree_test  <- predict(mod_rtree, test_reg_model)
+
+# Random Forest de regresión
+rtime_rf <- system.time({
+  mod_rrf <- randomForest(price_num ~ ., data = train_reg_model, ntree = 100)
+})
+pred_rrf_train <- predict(mod_rrf, train_reg_model)
+pred_rrf_test  <- predict(mod_rrf, test_reg_model)
+
+# KNN regresión
+rtime_knn <- system.time({
+  mod_rknn <- FNN::knn.reg(train = as.matrix(train_x), test = as.matrix(test_x), y = train$price_num, k = 20)
+})
+pred_rknn_test <- as.numeric(mod_rknn$pred)
+pred_rknn_train <- as.numeric(FNN::knn.reg(train = as.matrix(train_x), test = as.matrix(train_x), y = train$price_num, k = 20)$pred)
+
+# SVR radial
+rtime_svr <- system.time({
+  mod_svr <- e1071::svm(price_num ~ ., data = train_reg_model, kernel = "radial",
+                        type = "eps-regression", cost = 10, gamma = 1 / ncol(train_x), scale = FALSE)
+})
+pred_svr_train <- predict(mod_svr, train_reg_model)
+pred_svr_test  <- predict(mod_svr, test_reg_model)
+
+# RNA tuneada
+pred_rna_reg_train <- pred_reg_tuned_train
+pred_rna_reg_test  <- pred_reg_tuned_test
+
+tabla_reg_final <- bind_rows(
+  metricas_regresion(test$price_num, pred_lm_test, "Regresión lineal", rtime_lm) %>%
+    mutate(RMSE_Train = Metrics::rmse(train$price_num, pred_lm_train)),
+  metricas_regresion(test$price_num, pred_rtree_test, "Árbol de regresión", rtime_tree) %>%
+    mutate(RMSE_Train = Metrics::rmse(train$price_num, pred_rtree_train)),
+  metricas_regresion(test$price_num, pred_rrf_test, "Random Forest", rtime_rf) %>%
+    mutate(RMSE_Train = Metrics::rmse(train$price_num, pred_rrf_train)),
+  metricas_regresion(test$price_num, pred_rknn_test, "KNN (k = 20)", rtime_knn) %>%
+    mutate(RMSE_Train = Metrics::rmse(train$price_num, pred_rknn_train)),
+  metricas_regresion(test$price_num, pred_svr_test, "SVR radial", rtime_svr) %>%
+    mutate(RMSE_Train = Metrics::rmse(train$price_num, pred_svr_train)),
+  metricas_regresion(test$price_num, pred_rna_reg_test, "RNA tuneada", time_reg_tuned) %>%
+    mutate(RMSE_Train = Metrics::rmse(train$price_num, pred_rna_reg_train))
+) %>%
+  mutate(Gap_Overfit = RMSE - RMSE_Train) %>%
+  arrange(RMSE)
+
+kable(tabla_reg_final %>% mutate(across(where(is.numeric), ~round(.x, 4))),
+      caption = "Comparación final de modelos de regresión")
+```
+
+# Discusión integrada de resultados
+
+## Clasificación
+
+La mejor red neuronal para clasificación debe evaluarse no solamente por `Accuracy`, sino también por `F1 macro`, `Kappa`, tiempo de procesamiento y magnitud del sobreajuste. Un modelo que sube ligeramente en accuracy pero incrementa mucho la brecha train-test no es una mejora robusta para producción.
+
+## Regresión
+
+En regresión, el criterio principal es minimizar `RMSE` y `MAE`, manteniendo un `R²` alto y una brecha razonable entre error de entrenamiento y prueba. El modelo más útil para SmartStay no necesariamente es el más complejo, sino el que logra un error bajo y estable sobre datos no vistos.
+
+## Tabla resumen ejecutiva
+
+```{r tablas-resumen}
+mejor_clf <- tabla_clf_final %>% slice(1)
+mejor_reg <- tabla_reg_final %>% slice(1)
+
+resumen_ejecutivo <- tibble(
+  Problema = c("Clasificación de categoría de precio", "Predicción del precio numérico"),
+  Mejor_Modelo = c(mejor_clf$Modelo, mejor_reg$Modelo),
+  Metrica_Principal = c(round(mejor_clf$Accuracy, 4), round(mejor_reg$RMSE, 4)),
+  Interpretacion = c("Mayor accuracy en test", "Menor RMSE en test")
 )
 
-cat("Modelo 1 - Accuracy:", round(acc1,4), "\n")
-cat("Modelo 2 - Accuracy:", round(acc2,4), "\n\n")
-
-cat("Tiempo Modelo 1:", time1["elapsed"], "segundos\n")
-cat("Tiempo Modelo 2:", time2["elapsed"], "segundos\n")
+kable(resumen_ejecutivo, caption = "Resumen ejecutivo de mejores modelos")
 ```
 
-Análisis de resultados
+# Conclusiones
 
-El Modelo 1 presenta una arquitectura más simple, lo que se traduce en un menor tiempo de entrenamiento. Sin embargo, su capacidad para capturar relaciones complejas entre variables es limitada.
+1. Entre las redes neuronales de clasificación, el mejor resultado se obtuvo con la **RNA tuneada (`size = 5`, `decay = 0.01`)**, con **Accuracy = 0.6647**, **F1 macro = 0.6640** y una brecha train-test prácticamente nula (**Gap = -0.0009**). Esto indica una red estable y sin evidencia fuerte de sobreajuste.
+2. Las dos RNA base de clasificación quedaron por debajo del modelo tuneado: **RNA C1 = 0.5522** de accuracy y **RNA C2 = 0.5705**. Además, ambas mostraron brechas de sobreajuste mayores a **0.22**, por lo que la regularización y el tuning sí mejoraron sustancialmente el desempeño.
+3. En la comparación global de clasificación, el mejor algoritmo fue **Random Forest** con **Accuracy = 0.7048**, seguido por la **RNA tuneada** con **0.6647**. Por lo tanto, para este conjunto de datos la RNA mejora frente a árbol, KNN, Naive Bayes, SVM y regresión logística multinomial, pero **no supera a Random Forest**.
+4. En regresión, la mejor RNA fue la **RNA tuneada (`size = 3`, `decay = 0`)**, con **RMSE = 160.3305**, **MAE = 113.7901** y **R² = 0.1668**. Aunque mejora ligeramente a las RNA base, su capacidad predictiva sigue siendo limitada frente a otros algoritmos.
+5. En la comparación global de regresión, el mejor modelo fue **Random Forest** con **RMSE = 110.1011** y **R² = 0.6071**, muy por encima de la RNA tuneada. Después quedaron árbol de regresión (**RMSE = 126.9373**) y KNN (**RMSE = 130.3886**). Esto sugiere que, para predecir precios numéricos en este dataset, los métodos basados en árboles capturan mejor la estructura de los datos que las RNA implementadas en esta entrega.
+6. Considerando simultáneamente desempeño y sobreajuste, la mejor recomendación para SmartStay es usar **Random Forest** tanto para **clasificación** como para **regresión** si el objetivo principal es precisión predictiva. Si se busca una alternativa neuronal razonablemente estable, la mejor opción en esta entrega es la **RNA tuneada de clasificación**.
 
-El Modelo 2, con mayor profundidad y uso de la función de activación tanh, logra una mejor representación de patrones no lineales, lo cual suele reflejarse en una mayor exactitud.
+# Recomendaciones para SmartStay Advisors
 
-Análisis de errores
-
-A partir de las matrices de confusión se observa:
-
-- Los errores más frecuentes ocurren entre las categorías "media" y "cara", lo cual es razonable debido a su cercanía en términos de precio.
-
-- El modelo tiende a cometer menos errores extremos (por ejemplo, clasificar una propiedad barata como cara), lo cual es positivo desde la perspectiva de negocio.
-
-- Los errores más críticos son aquellos donde se clasifica una propiedad cara como barata, ya que podrían afectar decisiones financieras.
-
-En general, el Modelo 2 muestra mejor desempeño, aunque a un mayor costo computacional.
-
-# 7. Evaluación de sobreajuste
-
-El sobreajuste ocurre cuando el modelo aprende demasiado bien los datos de entrenamiento, pero pierde capacidad de generalización.
-
-```{r}
-# Accuracy entrenamiento modelo 2
-pred_train2 <- compute(nn2, train_x)$net.result
-pred_train2_class <- colnames(train_y)[apply(pred_train2, 1, which.max)]
-
-train_acc2 <- confusionMatrix(
-  as.factor(pred_train2_class),
-  train$precio_cat
-)$overall["Accuracy"]
-
-# Accuracy test
-test_acc2 <- acc2
-
-cat("Accuracy entrenamiento:", round(train_acc2,4), "\n")
-cat("Accuracy prueba:", round(test_acc2,4), "\n")
-cat("Diferencia:", round(train_acc2 - test_acc2,4), "\n")
-```
-
-## Interpretación
-- Si la diferencia entre entrenamiento y prueba es pequeña (< 5%), el modelo generaliza bien.
-- Si la diferencia es grande (> 5%), existe sobreajuste.
-
-### Análisis
-
-En este caso:
-
-- Si la diferencia es baja, se concluye que el modelo no presenta sobreajuste significativo.
-- Si la diferencia es alta, el modelo complejo (Modelo 2) está sobreajustando debido a su mayor capacidad.
-
-Esto es esperable en redes neuronales, ya que modelos más profundos tienden a ajustarse más a los datos de entrenamiento.
-
-# 8. Tuning del mejor modelo
-
-Se selecciona el mejor modelo (Modelo 2) y se ajustan sus hiperparámetros para mejorar su desempeño sin generar sobreajuste.
-
-```{r}
-nn_tuned <- neuralnet(
-  formula_nn,
-  data = train_nn_sample,
-  hidden = c(8,4),
-  act.fct = "tanh",
-  linear.output = FALSE,
-  stepmax = 5e4
-)
-
-pred_tuned <- compute(nn_tuned, test_x)$net.result
-pred_tuned_class <- colnames(train_y)[apply(pred_tuned, 1, which.max)]
-
-cm_tuned <- confusionMatrix(as.factor(pred_tuned_class), real)
-acc_tuned <- cm_tuned$overall["Accuracy"]
-
-cat("Original:", acc2, "\n")
-cat("Tuned:", acc_tuned, "\n")
-```
-
-
-
-## Evaluación del tuning
-
-El tuning busca mejorar:
-
-- Capacidad de aprendizaje
-- Generalización
-- Reducción de errores
-
-### Análisis
-
-- Si el accuracy mejora ligeramente → tuning exitoso
-- Si mejora mucho pero aumenta la diferencia train-test → sobreajuste
-- Si no mejora → el modelo ya estaba en un punto óptimo
-
-```{r}
-pred_train_tuned <- compute(nn_tuned, train_x)$net.result
-pred_train_tuned_class <- colnames(train_y)[apply(pred_train_tuned, 1, which.max)]
-
-train_acc_tuned <- confusionMatrix(
-  as.factor(pred_train_tuned_class),
-  train$precio_cat
-)$overall["Accuracy"]
-
-cat("Train tuned:", train_acc_tuned, "\n")
-cat("Test tuned:", acc_tuned, "\n")
-cat("Diferencia:", train_acc_tuned - acc_tuned, "\n")
-```
-
-Si la diferencia entre entrenamiento y prueba aumenta después del tuning, el modelo está sobreajustando. En caso contrario, el tuning mejora la capacidad de generalización.
+- Usar el mejor modelo de clasificación para apoyar la segmentación inicial de inmuebles por rango de precio.
+- Usar el mejor modelo de regresión como referencia de precio competitivo antes de recomendar una propiedad.
+- Mantener monitoreo periódico del error, ya que la dinámica del mercado Airbnb cambia con estacionalidad, ubicación y disponibilidad.
+- Si se dispone de más variables del negocio, incorporar información temporal y textual puede mejorar todavía más el desempeño de las RNA.
