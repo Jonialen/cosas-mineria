@@ -1,0 +1,832 @@
+---
+title: "Laboratorio 9: Redes Neuronales Artificiales — SmartStay Advisors"
+author: "Jonathan Díaz, Martín Pérez, Karen Toledo"
+date: "2026-05-10"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    number_sections: true
+---
+
+Enlace del repositorio: https://github.com/Jonialen/cosas-mineria
+
+Referencia de la base de datos: Moro, S., Rita, P., & Cortez, P. (2014). Bank Marketing [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5K306.
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 9, fig.height = 5)
+```
+
+```{r}
+library(tidyverse)
+library(skimr)
+library(janitor)
+library(GGally)
+library(corrplot)
+library(gridExtra)
+library(scales)
+library(tidyverse)
+library(caret)
+library(recipes)
+library(fastDummies)
+library(psych)
+library(reshape2)
+```
+
+# Diseño experimental y preparación de los datos
+
+## Carga del conjunto de datos
+
+```{r}
+bank <- read.csv("bank.csv", sep = ";")
+
+# Ver primeras filas
+head(bank)
+```
+
+## Información general del dataset
+
+```{r}
+# Dimensiones
+dim(bank)
+
+# Nombre de variables
+names(bank)
+
+# Estructura
+str(bank)
+
+# Resumen estadístico
+summary(bank)
+
+# Tipos de datos
+sapply(bank, class)
+```
+
+## Verificar valores faltantes
+
+```{r}
+# Cantidad de NA por variable
+colSums(is.na(bank))
+
+# Porcentaje de NA
+colSums(is.na(bank))/nrow(bank) * 100
+```
+
+## Revisar categorías "unknown"
+
+```{r}
+bank %>%
+  summarise(across(where(is.character),
+                   ~sum(. == "unknown")))
+
+bank %>%
+  summarise(across(where(is.character),
+                   ~mean(. == "unknown") * 100))
+```
+
+## Convertir variables categóricas a factor
+
+```{r}
+bank <- bank %>%
+  mutate(across(where(is.character), as.factor))
+
+str(bank)
+```
+
+## Balance de clases
+
+```{r}
+table(bank$y)
+
+prop.table(table(bank$y)) * 100
+```
+
+## Visualización balance de clases
+
+```{r}
+ggplot(bank, aes(x = y, fill = y)) +
+  geom_bar() +
+  labs(
+    title = "Distribución de la variable objetivo",
+    x = "Suscripción",
+    y = "Frecuencia"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal()
+```
+
+## Variables numéricas
+
+```{r}
+numeric_vars <- bank %>%
+  select(where(is.numeric))
+
+names(numeric_vars)
+
+summary(numeric_vars)
+```
+
+## Histogramas variables numéricas
+
+```{r}
+p1 <- ggplot(bank, aes(age)) +
+  geom_histogram(bins = 30, fill = "steelblue") +
+  theme_minimal()
+
+p2 <- ggplot(bank, aes(balance)) +
+  geom_histogram(bins = 30, fill = "darkgreen") +
+  theme_minimal()
+
+p3 <- ggplot(bank, aes(duration)) +
+  geom_histogram(bins = 30, fill = "darkorange") +
+  theme_minimal()
+
+p4 <- ggplot(bank, aes(campaign)) +
+  geom_histogram(bins = 30, fill = "purple") +
+  theme_minimal()
+
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+## Boxplots para detectar outliers
+
+```{r}
+p1 <- ggplot(bank, aes(y = age)) +
+  geom_boxplot(fill = "steelblue") +
+  theme_minimal()
+
+p2 <- ggplot(bank, aes(y = balance)) +
+  geom_boxplot(fill = "darkgreen") +
+  theme_minimal()
+
+p3 <- ggplot(bank, aes(y = duration)) +
+  geom_boxplot(fill = "darkorange") +
+  theme_minimal()
+
+p4 <- ggplot(bank, aes(y = campaign)) +
+  geom_boxplot(fill = "purple") +
+  theme_minimal()
+
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+## Correlación variables numéricas
+
+```{r}
+cor_matrix <- cor(numeric_vars)
+
+round(cor_matrix, 2)
+```
+
+## Heatmap correlaciones
+
+```{r}
+
+corrplot(
+  cor_matrix,
+  method = "color",
+  type = "upper",
+  tl.col = "black",
+  tl.srt = 45
+)
+```
+
+## Variables categóricas
+
+```{r}
+
+categorical_vars <- bank %>%
+  select(where(is.factor))
+
+names(categorical_vars)
+```
+
+## Frecuencias variables categóricas
+
+```{r}
+table(bank$job)
+
+table(bank$marital)
+
+table(bank$education)
+
+table(bank$housing)
+
+table(bank$loan)
+```
+
+## Visualización variables categóricas
+
+```{r}
+ggplot(bank, aes(job, fill = y)) +
+  geom_bar(position = "fill") +
+  coord_flip() +
+  labs(
+    title = "Suscripción según tipo de trabajo",
+    x = "Trabajo",
+    y = "Proporción"
+  ) +
+  theme_minimal()
+```
+
+## Educación vs variable objetivo
+
+```{r}
+ggplot(bank, aes(education, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Suscripción según nivel educativo",
+    x = "Educación",
+    y = "Proporción"
+  ) +
+  theme_minimal()
+```
+
+## Housing loan vs objetivo
+
+```{r}
+ggplot(bank, aes(housing, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Suscripción según préstamo hipotecario",
+    x = "Housing loan",
+    y = "Proporción"
+  ) +
+  theme_minimal()
+```
+
+## Duration vs objetivo
+
+```{r}
+ggplot(bank, aes(y = duration, x = y, fill = y)) +
+  geom_boxplot() +
+  labs(
+    title = "Duración de llamada vs suscripción",
+    x = "Suscripción",
+    y = "Duración"
+  ) +
+  theme_minimal()
+```
+
+## Matriz de pares (sample)
+
+```{r}
+set.seed(123)
+
+bank_sample <- bank %>%
+  sample_n(1000)
+
+GGally::ggpairs(
+  bank_sample,
+  columns = c("age", "balance", "duration", "campaign"),
+  aes(color = y, alpha = 0.5)
+)
+```
+
+## Resumen completo automático
+
+```{r}
+skim(bank)
+```
+
+## Conclusiones básicas del EDA
+
+```{r}
+cat("Número de filas:", nrow(bank), "\n")
+cat("Número de columnas:", ncol(bank), "\n")
+
+cat("\nDistribución de clases:\n")
+print(prop.table(table(bank$y))*100)
+
+cat("\nVariables numéricas:\n")
+print(names(select(bank, where(is.numeric))))
+
+cat("\nVariables categóricas:\n")
+print(names(select(bank, where(is.factor))))
+```
+
+# Preprocesamiento de datos
+
+## Copia del dataset original
+
+```{r}
+bank_clean <- bank
+
+glimpse(bank_clean)
+```
+
+## Revisar clases de variables
+
+```{r}
+sapply(bank_clean, class)
+```
+
+## Convertir target a formato binario
+
+```{r}
+bank_clean$y <- ifelse(bank_clean$y == "yes", 1, 0)
+
+table(bank_clean$y)
+```
+
+## Separar variables numéricas y categóricas
+
+```{r}
+numeric_cols <- bank_clean %>%
+  select(where(is.numeric)) %>%
+  names()
+
+categorical_cols <- bank_clean %>%
+  select(where(is.factor)) %>%
+  names()
+
+numeric_cols
+categorical_cols
+```
+
+## Revisar valores extremos
+
+```{r}
+summary(bank_clean[numeric_cols])
+```
+
+## Estandarización de variables numéricas
+
+```{r}
+preprocess_scaler <- preProcess(
+  bank_clean[, numeric_cols],
+  method = c("center", "scale")
+)
+
+bank_scaled_numeric <- predict(
+  preprocess_scaler,
+  bank_clean[, numeric_cols]
+)
+
+head(bank_scaled_numeric)
+```
+
+## Verificar estandarización
+
+```{r}
+summary(bank_scaled_numeric)
+
+sapply(bank_scaled_numeric, mean)
+
+sapply(bank_scaled_numeric, sd)
+```
+
+## Codificación One-Hot de variables categóricas
+
+```{r}
+bank_dummies <- dummy_cols(
+  bank_clean,
+  select_columns = categorical_cols,
+  remove_first_dummy = TRUE,
+  remove_selected_columns = TRUE
+)
+
+glimpse(bank_dummies)
+```
+
+## Revisar nuevas variables creadas
+
+```{r}
+names(bank_dummies)
+```
+
+## Reemplazar variables numéricas escaladas
+
+```{r}
+bank_processed <- bank_dummies
+
+bank_processed[, numeric_cols] <- bank_scaled_numeric
+
+head(bank_processed)
+```
+
+## Verificar dimensiones finales
+
+```{r}
+dim(bank_processed)
+
+str(bank_processed)
+```
+
+## Revisar si existen valores faltantes
+
+```{r}
+colSums(is.na(bank_processed))
+```
+
+## Eliminar variable duration 
+
+La duración puede causar data leakage porque la duración de la llamada está altamente relacionada con la respuesta.
+
+```{r}
+bank_processed_no_duration <- bank_processed %>%
+  select(-duration)
+
+dim(bank_processed_no_duration)
+```
+
+## Dataset final para modelado
+
+```{r}
+final_data <- bank_processed_no_duration
+
+head(final_data)
+
+glimpse(final_data)
+```
+
+## Separar X e y
+
+```{r}
+X <- final_data %>%
+  select(-y)
+
+y <- final_data$y
+
+dim(X)
+
+length(y)
+```
+
+## Convertir target a factor
+
+```{r}
+y <- as.factor(y)
+
+levels(y)
+```
+
+## Verificar dataset final
+
+```{r}
+summary(final_data)
+
+skimr::skim(final_data)
+```
+
+## Guardar dataset procesado
+
+```{r}
+write.csv(
+  final_data,
+  "bank_processed.csv",
+  row.names = FALSE
+)
+```
+
+## Conclusiones del preprocesamiento
+
+```{r}
+cat("Preprocesamiento finalizado.\n")
+
+cat("\nNúmero de filas:", nrow(final_data))
+cat("\nNúmero de columnas:", ncol(final_data))
+
+cat("\n\nVariables categóricas codificadas con One-Hot Encoding.")
+
+cat("\nVariables numéricas estandarizadas.")
+
+cat("\nVariable objetivo convertida a binaria.")
+
+cat("\nVariable duration eliminada para evitar data leakage.")
+```
+
+# Análisis gráfico y estadístico
+
+## Estadísticas descriptivas generales
+
+```{r}
+describe(select(bank, where(is.numeric)))
+```
+
+## Medidas estadísticas importantes
+
+```{r}
+bank %>%
+  select(where(is.numeric)) %>%
+  summarise(
+    across(
+      everything(),
+      list(
+        media = mean,
+        mediana = median,
+        desviacion = sd,
+        minimo = min,
+        maximo = max
+      ),
+      na.rm = TRUE
+    )
+  )
+```
+
+## Distribución de clases
+
+```{r}
+table(bank$y)
+
+prop.table(table(bank$y)) * 100
+```
+
+## Gráfico balance de clases
+
+```{r}
+ggplot(bank, aes(x = y, fill = y)) +
+  geom_bar() +
+  geom_text(
+    stat = "count",
+    aes(label = after_stat(count)),
+    vjust = -0.5
+  ) +
+  labs(
+    title = "Distribución de la variable objetivo",
+    x = "Suscripción",
+    y = "Cantidad"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal()
+```
+
+## Histogramas variables numéricas
+
+```{r}
+num_vars <- bank %>%
+  select(where(is.numeric))
+
+num_vars_long <- melt(num_vars)
+
+ggplot(num_vars_long, aes(value)) +
+  geom_histogram(bins = 30, fill = "steelblue") +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal() +
+  labs(
+    title = "Distribución de variables numéricas",
+    x = "Valor",
+    y = "Frecuencia"
+  )
+```
+
+## Detección visual de outliers
+
+```{r}
+ggplot(num_vars_long, aes(y = value)) +
+  geom_boxplot(fill = "darkorange") +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal() +
+  labs(
+    title = "Detección de outliers",
+    y = "Valores"
+  )
+```
+
+## Correlaciones entre variables numéricas
+
+```{r}
+cor_matrix <- cor(num_vars)
+
+round(cor_matrix, 2)
+```
+
+## Heatmap de correlaciones
+
+```{r}
+corrplot(
+  cor_matrix,
+  method = "color",
+  type = "upper",
+  addCoef.col = "black",
+  tl.col = "black",
+  number.cex = 0.7
+)
+```
+
+## Scatterplots entre variables importantes
+
+```{r}
+GGally::ggpairs(
+  bank,
+  columns = c("age", "balance", "duration", "campaign"),
+  aes(color = y, alpha = 0.4)
+)
+```
+
+## Age vs variable objetivo
+
+```{r}
+ggplot(bank, aes(x = y, y = age, fill = y)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(
+    title = "Edad según suscripción",
+    x = "Suscripción",
+    y = "Edad"
+  )
+```
+
+## Balance vs variable objetivo
+
+```{r}
+ggplot(bank, aes(x = y, y = balance, fill = y)) +
+  geom_boxplot() +
+  coord_cartesian(ylim = quantile(bank$balance, c(0.05, 0.95))) +
+  theme_minimal() +
+  labs(
+    title = "Balance promedio según suscripción",
+    x = "Suscripción",
+    y = "Balance"
+  )
+```
+
+## Duration vs variable objetivo
+
+```{r}
+ggplot(bank, aes(x = y, y = duration, fill = y)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(
+    title = "Duración de llamada según suscripción",
+    x = "Suscripción",
+    y = "Duración"
+  )
+```
+
+## Job vs variable objetivo
+
+```{r}
+ggplot(bank, aes(job, fill = y)) +
+  geom_bar(position = "fill") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Suscripción según trabajo",
+    x = "Trabajo",
+    y = "Proporción"
+  )
+```
+
+## Education vs variable objetivo
+
+```{r}
+ggplot(bank, aes(education, fill = y)) +
+  geom_bar(position = "fill") +
+  theme_minimal() +
+  labs(
+    title = "Suscripción según educación",
+    x = "Educación",
+    y = "Proporción"
+  )
+```
+
+## Marital status vs variable objetivo
+
+```{r}
+ggplot(bank, aes(marital, fill = y)) +
+  geom_bar(position = "fill") +
+  theme_minimal() +
+  labs(
+    title = "Suscripción según estado civil",
+    x = "Estado civil",
+    y = "Proporción"
+  )
+```
+
+## Housing loan vs variable objetivo
+
+```{r}
+ggplot(bank, aes(housing, fill = y)) +
+  geom_bar(position = "fill") +
+  theme_minimal() +
+  labs(
+    title = "Suscripción según préstamo hipotecario",
+    x = "Housing loan",
+    y = "Proporción"
+  )
+```
+
+## Loan vs variable objetivo
+
+```{r}
+ggplot(bank, aes(loan, fill = y)) +
+  geom_bar(position = "fill") +
+  theme_minimal() +
+  labs(
+    title = "Suscripción según préstamo personal",
+    x = "Loan",
+    y = "Proporción"
+  )
+```
+
+## Month vs variable objetivo
+
+```{r}
+ggplot(bank, aes(month, fill = y)) +
+  geom_bar(position = "fill") +
+  theme_minimal() +
+  labs(
+    title = "Suscripción según mes de contacto",
+    x = "Mes",
+    y = "Proporción"
+  )
+```
+
+## Poutcome vs variable objetivo
+
+```{r}
+ggplot(bank, aes(poutcome, fill = y)) +
+  geom_bar(position = "fill") +
+  theme_minimal() +
+  labs(
+    title = "Resultado campaña previa vs suscripción",
+    x = "Resultado campaña previa",
+    y = "Proporción"
+  )
+```
+
+## Tabla de contingencia
+
+```{r}
+table(bank$job, bank$y)
+
+prop.table(table(bank$job, bank$y), 1)
+```
+
+## Prueba Chi-cuadrado
+
+```{r}
+chisq.test(bank$job, bank$y)
+
+chisq.test(bank$education, bank$y)
+
+chisq.test(bank$housing, bank$y)
+```
+
+## Comparación estadística numérica
+
+```{r}
+t.test(age ~ y, data = bank)
+
+t.test(balance ~ y, data = bank)
+
+t.test(duration ~ y, data = bank)
+```
+
+## Variables más relacionadas con y
+
+```{r}
+bank_num <- bank %>%
+  mutate(y = ifelse(y == "yes", 1, 0)) %>%
+  select(where(is.numeric))
+
+cor_y <- cor(bank_num)
+
+sort(cor_y[, "y"], decreasing = TRUE)
+```
+
+## Heatmap incluyendo variable objetivo
+
+```{r}
+corrplot(
+  cor(bank_num),
+  method = "color",
+  type = "upper",
+  addCoef.col = "black",
+  tl.col = "black"
+)
+```
+
+## Resumen interpretativo automático
+
+```{r}
+cat("ANÁLISIS ESTADÍSTICO Y GRÁFICO\n")
+
+cat("\nNúmero de observaciones:", nrow(bank))
+cat("\nNúmero de variables:", ncol(bank))
+
+cat("\n\nDistribución porcentual de clases:\n")
+print(prop.table(table(bank$y)) * 100)
+
+cat("\n\nVariables numéricas analizadas:\n")
+print(names(select(bank, where(is.numeric))))
+
+cat("\n\nVariables categóricas analizadas:\n")
+print(names(select(bank, where(is.factor))))
+
+cat("\n\nEl dataset presenta desbalance de clases.")
+
+cat("\nExisten outliers principalmente en balance y duration.")
+
+cat("\nDuration muestra fuerte relación con la variable objetivo.")
+
+cat("\nLas variables categóricas muestran patrones diferentes según la suscripción.")
+```
+
