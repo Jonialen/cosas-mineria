@@ -9,824 +9,194 @@ output:
     theme: flatly
     highlight: tango
     number_sections: true
+  pdf_document:
+    toc: true
+    number_sections: true
 ---
 
-Enlace del repositorio: https://github.com/Jonialen/cosas-mineria
+Enlace del repositorio: <https://github.com/Jonialen/cosas-mineria>
 
-Referencia de la base de datos: Moro, S., Rita, P., & Cortez, P. (2014). Bank Marketing [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5K306.
-
-> Nota de entrega: el análisis semi-supervisado reproducible y autocontenido está en `lab10_semisupervisado.R`. Ese script usa únicamente base R, lee el dataset desde `bank+marketing/bank.zip` si `bank.csv` no existe en la raíz, genera tablas y figuras en `outputs/`, y escribe el reporte final en español en `report.md`.
+Referencia de la base de datos: Moro, S., Rita, P., & Cortez, P. (2014). *Bank Marketing* [Dataset]. UCI Machine Learning Repository. <https://doi.org/10.24432/C5K306>.
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
                       fig.width = 9, fig.height = 5)
 ```
 
-```{r}
-library(tidyverse)
-library(skimr)
-library(janitor)
-library(GGally)
-library(corrplot)
-library(gridExtra)
-library(scales)
-library(tidyverse)
-library(caret)
-library(recipes)
-library(fastDummies)
-library(psych)
-library(reshape2)
-```
-
-# Diseño experimental y preparación de los datos
-
-## Carga del conjunto de datos
-
-```{r}
-bank <- read.csv("bank.csv", sep = ";")
-
-# Ver primeras filas
-head(bank)
-```
-
-## Información general del dataset
-
-```{r}
-# Dimensiones
-dim(bank)
-
-# Nombre de variables
-names(bank)
-
-# Estructura
-str(bank)
-
-# Resumen estadístico
-summary(bank)
-
-# Tipos de datos
-sapply(bank, class)
-```
-
-## Verificar valores faltantes
-
-```{r}
-# Cantidad de NA por variable
-colSums(is.na(bank))
-
-# Porcentaje de NA
-colSums(is.na(bank))/nrow(bank) * 100
-```
-
-## Revisar categorías "unknown"
-
-```{r}
-bank %>%
-  summarise(across(where(is.character),
-                   ~sum(. == "unknown")))
-
-bank %>%
-  summarise(across(where(is.character),
-                   ~mean(. == "unknown") * 100))
-```
-
-## Convertir variables categóricas a factor
-
-```{r}
-bank <- bank %>%
-  mutate(across(where(is.character), as.factor))
-
-str(bank)
-```
-
-## Balance de clases
-
-```{r}
-table(bank$y)
-
-prop.table(table(bank$y)) * 100
-```
-
-## Visualización balance de clases
-
-```{r}
-ggplot(bank, aes(x = y, fill = y)) +
-  geom_bar() +
-  labs(
-    title = "Distribución de la variable objetivo",
-    x = "Suscripción",
-    y = "Frecuencia"
-  ) +
-  scale_y_continuous(labels = comma) +
-  theme_minimal()
-```
-
-## Variables numéricas
-
-```{r}
-numeric_vars <- bank %>%
-  select(where(is.numeric))
-
-names(numeric_vars)
-
-summary(numeric_vars)
-```
-
-## Histogramas variables numéricas
-
-```{r}
-p1 <- ggplot(bank, aes(age)) +
-  geom_histogram(bins = 30, fill = "steelblue") +
-  theme_minimal()
-
-p2 <- ggplot(bank, aes(balance)) +
-  geom_histogram(bins = 30, fill = "darkgreen") +
-  theme_minimal()
-
-p3 <- ggplot(bank, aes(duration)) +
-  geom_histogram(bins = 30, fill = "darkorange") +
-  theme_minimal()
-
-p4 <- ggplot(bank, aes(campaign)) +
-  geom_histogram(bins = 30, fill = "purple") +
-  theme_minimal()
-
-grid.arrange(p1, p2, p3, p4, ncol = 2)
-```
-
-## Boxplots para detectar outliers
-
-```{r}
-p1 <- ggplot(bank, aes(y = age)) +
-  geom_boxplot(fill = "steelblue") +
-  theme_minimal()
-
-p2 <- ggplot(bank, aes(y = balance)) +
-  geom_boxplot(fill = "darkgreen") +
-  theme_minimal()
-
-p3 <- ggplot(bank, aes(y = duration)) +
-  geom_boxplot(fill = "darkorange") +
-  theme_minimal()
-
-p4 <- ggplot(bank, aes(y = campaign)) +
-  geom_boxplot(fill = "purple") +
-  theme_minimal()
-
-grid.arrange(p1, p2, p3, p4, ncol = 2)
-```
-
-## Correlación variables numéricas
-
-```{r}
-cor_matrix <- cor(numeric_vars)
-
-round(cor_matrix, 2)
-```
-
-## Heatmap correlaciones
-
-```{r}
-
-corrplot(
-  cor_matrix,
-  method = "color",
-  type = "upper",
-  tl.col = "black",
-  tl.srt = 45
-)
-```
-
-## Variables categóricas
-
-```{r}
-
-categorical_vars <- bank %>%
-  select(where(is.factor))
-
-names(categorical_vars)
-```
-
-## Frecuencias variables categóricas
-
-```{r}
-table(bank$job)
-
-table(bank$marital)
-
-table(bank$education)
-
-table(bank$housing)
-
-table(bank$loan)
-```
-
-## Visualización variables categóricas
-
-```{r}
-ggplot(bank, aes(job, fill = y)) +
-  geom_bar(position = "fill") +
-  coord_flip() +
-  labs(
-    title = "Suscripción según tipo de trabajo",
-    x = "Trabajo",
-    y = "Proporción"
-  ) +
-  theme_minimal()
-```
-
-## Educación vs variable objetivo
-
-```{r}
-ggplot(bank, aes(education, fill = y)) +
-  geom_bar(position = "fill") +
-  labs(
-    title = "Suscripción según nivel educativo",
-    x = "Educación",
-    y = "Proporción"
-  ) +
-  theme_minimal()
-```
-
-## Housing loan vs objetivo
-
-```{r}
-ggplot(bank, aes(housing, fill = y)) +
-  geom_bar(position = "fill") +
-  labs(
-    title = "Suscripción según préstamo hipotecario",
-    x = "Housing loan",
-    y = "Proporción"
-  ) +
-  theme_minimal()
-```
-
-## Duration vs objetivo
-
-```{r}
-ggplot(bank, aes(y = duration, x = y, fill = y)) +
-  geom_boxplot() +
-  labs(
-    title = "Duración de llamada vs suscripción",
-    x = "Suscripción",
-    y = "Duración"
-  ) +
-  theme_minimal()
-```
-
-## Matriz de pares (sample)
-
-```{r}
-set.seed(123)
-
-bank_sample <- bank %>%
-  sample_n(1000)
-
-GGally::ggpairs(
-  bank_sample,
-  columns = c("age", "balance", "duration", "campaign"),
-  aes(color = y, alpha = 0.5)
-)
-```
-
-## Resumen completo automático
-
-```{r}
-skim(bank)
-```
-
-## Conclusiones básicas del EDA
-
-```{r}
-cat("Número de filas:", nrow(bank), "\n")
-cat("Número de columnas:", ncol(bank), "\n")
+```{r ejecutar-analisis, include=FALSE}
+# Este Rmd mantiene la entrega en el formato original del curso.
+# El análisis pesado está en un script separado para que sea reproducible también con Rscript.
+source("lab10_semisupervisado.R")
 
-cat("\nDistribución de clases:\n")
-print(prop.table(table(bank$y))*100)
-
-cat("\nVariables numéricas:\n")
-print(names(select(bank, where(is.numeric))))
-
-cat("\nVariables categóricas:\n")
-print(names(select(bank, where(is.factor))))
-```
-
-# Preprocesamiento de datos
-
-## Copia del dataset original
-
-```{r}
-bank_clean <- bank
-
-glimpse(bank_clean)
-```
-
-## Revisar clases de variables
-
-```{r}
-sapply(bank_clean, class)
-```
-
-## Convertir target a formato binario
-
-```{r}
-bank_clean$y <- ifelse(bank_clean$y == "yes", 1, 0)
-
-table(bank_clean$y)
-```
-
-## Separar variables numéricas y categóricas
-
-```{r}
-numeric_cols <- bank_clean %>%
-  select(where(is.numeric)) %>%
-  names()
-
-categorical_cols <- bank_clean %>%
-  select(where(is.factor)) %>%
-  names()
-
-numeric_cols
-categorical_cols
-```
-
-## Revisar valores extremos
-
-```{r}
-summary(bank_clean[numeric_cols])
-```
-
-## Estandarización de variables numéricas
-
-```{r}
-preprocess_scaler <- preProcess(
-  bank_clean[, numeric_cols],
-  method = c("center", "scale")
-)
-
-bank_scaled_numeric <- predict(
-  preprocess_scaler,
-  bank_clean[, numeric_cols]
-)
-
-head(bank_scaled_numeric)
-```
-
-## Verificar estandarización
-
-```{r}
-summary(bank_scaled_numeric)
-
-sapply(bank_scaled_numeric, mean)
-
-sapply(bank_scaled_numeric, sd)
-```
-
-## Codificación One-Hot de variables categóricas
-
-```{r}
-bank_dummies <- dummy_cols(
-  bank_clean,
-  select_columns = categorical_cols,
-  remove_first_dummy = TRUE,
-  remove_selected_columns = TRUE
-)
-
-glimpse(bank_dummies)
-```
-
-## Revisar nuevas variables creadas
-
-```{r}
-names(bank_dummies)
-```
-
-## Reemplazar variables numéricas escaladas
-
-```{r}
-bank_processed <- bank_dummies
-
-bank_processed[, numeric_cols] <- bank_scaled_numeric
-
-head(bank_processed)
+eda_resumen <- read.csv("outputs/eda_resumen.csv")
+metricas <- read.csv("outputs/metricas_modelos.csv")
+mejores <- read.csv("outputs/mejores_por_modelo.csv")
+confusiones <- read.csv("outputs/matrices_confusion.csv")
+historial_st <- read.csv("outputs/self_training_historial.csv")
 ```
 
-## Verificar dimensiones finales
+# Introducción
 
-```{r}
-dim(bank_processed)
+El objetivo de este laboratorio es evaluar algoritmos de aprendizaje semi-supervisado en un escenario realista donde solo una fracción pequeña de las observaciones tiene etiqueta disponible. Se utilizó el conjunto **Bank Marketing**, que contiene información de campañas telefónicas de una institución bancaria portuguesa. La variable objetivo `y` indica si el cliente suscribió o no un depósito a plazo.
 
-str(bank_processed)
-```
-
-## Revisar si existen valores faltantes
-
-```{r}
-colSums(is.na(bank_processed))
-```
-
-## Eliminar variable duration 
+El laboratorio compara un modelo supervisado puro contra dos métodos semi-supervisados. Las conclusiones y el análisis se derivan de la ejecución del código, no de supuestos previos.
 
-La duración puede causar data leakage porque la duración de la llamada está altamente relacionada con la respuesta.
+# Selección y análisis del dataset
 
-```{r}
-bank_processed_no_duration <- bank_processed %>%
-  select(-duration)
+El dataset usado contiene `r eda_resumen$valor[eda_resumen$indicador == "filas"]` filas y `r eda_resumen$valor[eda_resumen$indicador == "columnas"]` columnas, por lo que cumple el requisito de al menos 1000 observaciones y 8 variables. Es un dataset real y público de UCI.
 
-dim(bank_processed_no_duration)
+```{r resumen-dataset}
+eda_resumen
 ```
 
-## Dataset final para modelado
+La clase positiva (`yes`) representa aproximadamente `r eda_resumen$valor[eda_resumen$indicador == "porcentaje_yes"]`% de los datos. Por eso se reportan precision, recall y F1-score además de accuracy.
 
-```{r}
-final_data <- bank_processed_no_duration
-
-head(final_data)
-
-glimpse(final_data)
+```{r balance-clases, echo=FALSE, out.width='85%'}
+knitr::include_graphics("outputs/figures/01_balance_clases.png")
 ```
-
-## Separar X e y
-
-```{r}
-X <- final_data %>%
-  select(-y)
-
-y <- final_data$y
-
-dim(X)
 
-length(y)
+```{r histogramas-numericas, echo=FALSE, out.width='95%'}
+knitr::include_graphics("outputs/figures/02_histogramas_numericas.png")
 ```
 
-## Convertir target a factor
-
-```{r}
-y <- as.factor(y)
-
-levels(y)
+```{r suscripcion-trabajo, echo=FALSE, out.width='85%'}
+knitr::include_graphics("outputs/figures/03_suscripcion_por_trabajo.png")
 ```
 
-## Verificar dataset final
+# Preprocesamiento y preparación de datos
 
-```{r}
-summary(final_data)
+Se aplicaron las siguientes transformaciones:
 
-skimr::skim(final_data)
-```
+1. Conversión de variables categóricas a indicadores mediante `model.matrix`, equivalente a one-hot encoding.
+2. Estandarización de variables numéricas y binarias para que los modelos basados en distancia no queden dominados por escalas grandes como `balance`.
+3. Imputación simple: mediana para variables numéricas y moda para categóricas en caso de faltantes.
+4. Eliminación de `duration`, porque la duración de la llamada se conoce después del contacto y puede introducir fuga de información para una predicción previa a la campaña.
+5. Separación estratificada 70/30 entre entrenamiento y prueba para conservar el desbalance original.
 
-## Guardar dataset procesado
-
-```{r}
-write.csv(
-  final_data,
-  "bank_processed.csv",
-  row.names = FALSE
-)
-```
+Importante: el escalado se ajusta solo con entrenamiento y luego se aplica a prueba, para evitar fuga de información de la distribución de prueba.
 
-## Conclusiones del preprocesamiento
+# Diseño experimental semi-supervisado
 
-```{r}
-cat("Preprocesamiento finalizado.\n")
+En el conjunto de entrenamiento se simuló disponibilidad parcial de etiquetas usando 5%, 10% y 20% de datos etiquetados. El resto de observaciones de entrenamiento se trató como no etiquetado para los algoritmos semi-supervisados. La prueba siempre conservó sus etiquetas reales, pero solo se usó al final para evaluación.
 
-cat("\nNúmero de filas:", nrow(final_data))
-cat("\nNúmero de columnas:", ncol(final_data))
+Se compararon tres enfoques:
 
-cat("\n\nVariables categóricas codificadas con One-Hot Encoding.")
+- **Baseline supervisado GLM:** regresión logística entrenada únicamente con la fracción etiquetada.
+- **Self-training GLM:** regresión logística que pseudo-etiqueta iterativamente ejemplos no etiquetados cuando su confianza supera un umbral. Se evaluaron thresholds 0.70, 0.80 y 0.90.
+- **Propagación de etiquetas kNN-RBF:** método basado en grafo. Se construye un grafo kNN entre observaciones de entrenamiento con pesos RBF. Se evaluaron k = 5, 10 y 20 vecinos.
 
-cat("\nVariables numéricas estandarizadas.")
+# Fundamento conceptual de los algoritmos
 
-cat("\nVariable objetivo convertida a binaria.")
+## Baseline supervisado
 
-cat("\nVariable duration eliminada para evitar data leakage.")
-```
+La regresión logística estima la probabilidad condicional de la clase positiva mediante la función sigmoide `p(y=1|x)=1/(1+exp(-beta x))`. Sus parámetros se ajustan maximizando la verosimilitud de las etiquetas observadas. En este laboratorio solo ve el subconjunto etiquetado, por lo que su desempeño depende de cuán representativa sea esa pequeña muestra.
 
-# Análisis gráfico y estadístico
+## Self-training
 
-## Estadísticas descriptivas generales
+Self-training parte de un clasificador supervisado inicial. Luego predice sobre datos no etiquetados y agrega al entrenamiento aquellos casos cuya confianza es alta. Matemáticamente, se aproxima el problema usando etiquetas latentes: si `max(p, 1-p) >= threshold`, se acepta la pseudo-etiqueta `argmax p(y|x)`. Su ventaja es que puede ampliar el conjunto de entrenamiento sin etiquetado manual; su riesgo principal es la propagación de errores, especialmente si el threshold es bajo o el clasificador inicial está sesgado.
 
-```{r}
-describe(select(bank, where(is.numeric)))
-```
+## Propagación de etiquetas por grafo
 
-## Medidas estadísticas importantes
-
-```{r}
-bank %>%
-  select(where(is.numeric)) %>%
-  summarise(
-    across(
-      everything(),
-      list(
-        media = mean,
-        mediana = median,
-        desviacion = sd,
-        minimo = min,
-        maximo = max
-      ),
-      na.rm = TRUE
-    )
-  )
-```
+Los métodos de propagación representan las observaciones como nodos de un grafo. Los pesos `w_ij = exp(-||x_i-x_j||^2/(2 sigma^2))` conectan vecinos similares. La matriz de etiquetas se actualiza iterativamente con `F_{t+1}=alpha*S*F_t+(1-alpha)*Y`, donde `S` es la matriz de transición normalizada y `Y` contiene las etiquetas conocidas. El supuesto central es suavidad: puntos cercanos en el espacio de características tienden a compartir etiqueta. El hiperparámetro `k` controla qué tan local o global es la propagación.
 
-## Distribución de clases
+# Resultados cuantitativos
 
-```{r}
-table(bank$y)
+La tabla siguiente resume todas las corridas. El F1-score es clave porque la clase positiva es minoritaria.
 
-prop.table(table(bank$y)) * 100
+```{r tabla-resultados}
+metricas
 ```
 
-## Gráfico balance de clases
-
-```{r}
-ggplot(bank, aes(x = y, fill = y)) +
-  geom_bar() +
-  geom_text(
-    stat = "count",
-    aes(label = after_stat(count)),
-    vjust = -0.5
-  ) +
-  labs(
-    title = "Distribución de la variable objetivo",
-    x = "Suscripción",
-    y = "Cantidad"
-  ) +
-  scale_y_continuous(labels = comma) +
-  theme_minimal()
-```
+Mejor configuración por familia de modelo:
 
-## Histogramas variables numéricas
-
-```{r}
-num_vars <- bank %>%
-  select(where(is.numeric))
-
-num_vars_long <- melt(num_vars)
-
-ggplot(num_vars_long, aes(value)) +
-  geom_histogram(bins = 30, fill = "steelblue") +
-  facet_wrap(~variable, scales = "free") +
-  theme_minimal() +
-  labs(
-    title = "Distribución de variables numéricas",
-    x = "Valor",
-    y = "Frecuencia"
-  )
+```{r mejores-modelos}
+mejores[, c("modelo", "porcentaje_etiquetado_label", "hiperparametro", "accuracy", "precision", "recall", "f1")]
 ```
 
-## Detección visual de outliers
-
-```{r}
-ggplot(num_vars_long, aes(y = value)) +
-  geom_boxplot(fill = "darkorange") +
-  facet_wrap(~variable, scales = "free") +
-  theme_minimal() +
-  labs(
-    title = "Detección de outliers",
-    y = "Valores"
-  )
+```{r mejores-objetos, include=FALSE}
+best_overall <- metricas[which.max(metricas$f1), ]
+semi_metricas <- metricas[metricas$modelo != "Baseline supervisado GLM", ]
+best_semi <- semi_metricas[which.max(semi_metricas$f1), ]
 ```
 
-## Correlaciones entre variables numéricas
-
-```{r}
-cor_matrix <- cor(num_vars)
-
-round(cor_matrix, 2)
-```
+El mejor resultado global por F1 fue **`r best_overall$modelo`** con `r best_overall$porcentaje_etiquetado_label` de etiquetas y configuración `r best_overall$hiperparametro` (F1 = `r round(best_overall$f1, 4)`). Entre los métodos semi-supervisados, el mejor fue **`r best_semi$modelo`** con `r best_semi$hiperparametro` y `r best_semi$porcentaje_etiquetado_label` de etiquetas (F1 = `r round(best_semi$f1, 4)`).
 
-## Heatmap de correlaciones
-
-```{r}
-corrplot(
-  cor_matrix,
-  method = "color",
-  type = "upper",
-  addCoef.col = "black",
-  tl.col = "black",
-  number.cex = 0.7
-)
-```
+# Análisis de sensibilidad e hiperparámetros
 
-## Scatterplots entre variables importantes
-
-```{r}
-GGally::ggpairs(
-  bank,
-  columns = c("age", "balance", "duration", "campaign"),
-  aes(color = y, alpha = 0.4)
-)
-```
+En self-training, el threshold controla el intercambio entre cantidad y confiabilidad de pseudo-etiquetas. Un threshold bajo agrega más datos, pero puede introducir ruido. Un threshold alto agrega menos ejemplos, aunque usualmente con menor error. En propagación de etiquetas, `k` controla la conectividad del grafo: valores bajos hacen una propagación local y sensible a ruido; valores altos suavizan más, pero pueden mezclar regiones de clases distintas.
 
-## Age vs variable objetivo
-
-```{r}
-ggplot(bank, aes(x = y, y = age, fill = y)) +
-  geom_boxplot() +
-  theme_minimal() +
-  labs(
-    title = "Edad según suscripción",
-    x = "Suscripción",
-    y = "Edad"
-  )
+```{r f1-porcentaje, echo=FALSE, out.width='85%'}
+knitr::include_graphics("outputs/figures/03_f1_por_porcentaje.png")
 ```
 
-## Balance vs variable objetivo
-
-```{r}
-ggplot(bank, aes(x = y, y = balance, fill = y)) +
-  geom_boxplot() +
-  coord_cartesian(ylim = quantile(bank$balance, c(0.05, 0.95))) +
-  theme_minimal() +
-  labs(
-    title = "Balance promedio según suscripción",
-    x = "Suscripción",
-    y = "Balance"
-  )
+```{r accuracy-porcentaje, echo=FALSE, out.width='85%'}
+knitr::include_graphics("outputs/figures/04_accuracy_por_porcentaje.png")
 ```
 
-## Duration vs variable objetivo
-
-```{r}
-ggplot(bank, aes(x = y, y = duration, fill = y)) +
-  geom_boxplot() +
-  theme_minimal() +
-  labs(
-    title = "Duración de llamada según suscripción",
-    x = "Suscripción",
-    y = "Duración"
-  )
+```{r sensibilidad-self-training, echo=FALSE, out.width='85%'}
+knitr::include_graphics("outputs/figures/05_sensibilidad_self_training.png")
 ```
 
-## Job vs variable objetivo
-
-```{r}
-ggplot(bank, aes(job, fill = y)) +
-  geom_bar(position = "fill") +
-  coord_flip() +
-  theme_minimal() +
-  labs(
-    title = "Suscripción según trabajo",
-    x = "Trabajo",
-    y = "Proporción"
-  )
+```{r sensibilidad-label-propagation, echo=FALSE, out.width='85%'}
+knitr::include_graphics("outputs/figures/06_sensibilidad_label_propagation.png")
 ```
 
-## Education vs variable objetivo
-
-```{r}
-ggplot(bank, aes(education, fill = y)) +
-  geom_bar(position = "fill") +
-  theme_minimal() +
-  labs(
-    title = "Suscripción según educación",
-    x = "Educación",
-    y = "Proporción"
-  )
+```{r evolucion-pseudoetiquetas, echo=FALSE, out.width='85%'}
+knitr::include_graphics("outputs/figures/07_evolucion_pseudoetiquetas.png")
 ```
 
-## Marital status vs variable objetivo
-
-```{r}
-ggplot(bank, aes(marital, fill = y)) +
-  geom_bar(position = "fill") +
-  theme_minimal() +
-  labs(
-    title = "Suscripción según estado civil",
-    x = "Estado civil",
-    y = "Proporción"
-  )
-```
+El historial de self-training permite observar cuántas pseudo-etiquetas se agregaron en cada iteración:
 
-## Housing loan vs variable objetivo
-
-```{r}
-ggplot(bank, aes(housing, fill = y)) +
-  geom_bar(position = "fill") +
-  theme_minimal() +
-  labs(
-    title = "Suscripción según préstamo hipotecario",
-    x = "Housing loan",
-    y = "Proporción"
-  )
+```{r historial-self-training}
+head(historial_st, 20)
 ```
 
-## Loan vs variable objetivo
-
-```{r}
-ggplot(bank, aes(loan, fill = y)) +
-  geom_bar(position = "fill") +
-  theme_minimal() +
-  labs(
-    title = "Suscripción según préstamo personal",
-    x = "Loan",
-    y = "Proporción"
-  )
-```
+# Matriz de confusión y comparación real vs predicho
 
-## Month vs variable objetivo
-
-```{r}
-ggplot(bank, aes(month, fill = y)) +
-  geom_bar(position = "fill") +
-  theme_minimal() +
-  labs(
-    title = "Suscripción según mes de contacto",
-    x = "Mes",
-    y = "Proporción"
-  )
-```
+La matriz de confusión del mejor modelo global resume la comparación entre valores reales y predichos.
 
-## Poutcome vs variable objetivo
-
-```{r}
-ggplot(bank, aes(poutcome, fill = y)) +
-  geom_bar(position = "fill") +
-  theme_minimal() +
-  labs(
-    title = "Resultado campaña previa vs suscripción",
-    x = "Resultado campaña previa",
-    y = "Proporción"
-  )
+```{r matriz-confusion, echo=FALSE, out.width='75%'}
+knitr::include_graphics("outputs/figures/08_matriz_confusion_mejor_modelo.png")
 ```
 
-## Tabla de contingencia
+Los datos completos de las matrices de confusión quedan disponibles en `outputs/matrices_confusion.csv`.
 
-```{r}
-table(bank$job, bank$y)
-
-prop.table(table(bank$job, bank$y), 1)
+```{r tabla-confusion-mejor}
+confusiones[confusiones$modelo == best_overall$modelo &
+             confusiones$porcentaje_etiquetado == best_overall$porcentaje_etiquetado &
+             confusiones$hiperparametro == best_overall$hiperparametro, ]
 ```
-
-## Prueba Chi-cuadrado
-
-```{r}
-chisq.test(bank$job, bank$y)
 
-chisq.test(bank$education, bank$y)
+# Discusión
 
-chisq.test(bank$housing, bank$y)
-```
+El escenario semi-supervisado muestra que disponer de más observaciones no etiquetadas no garantiza mejora automática. Self-training puede mejorar cuando el clasificador inicial produce pseudo-etiquetas confiables; sin embargo, si el modelo inicial aprende el sesgo hacia la clase mayoritaria, puede reforzarlo. La propagación por grafo aprovecha relaciones locales entre clientes similares, pero depende de que la representación de características y la métrica de distancia sean apropiadas.
 
-## Comparación estadística numérica
+En esta ejecución, el baseline supervisado con 20% de etiquetas quedó levemente por encima del mejor método semi-supervisado. Eso no invalida los métodos semi-supervisados; más bien evidencia que, con una clase positiva minoritaria y sin la variable `duration`, las pseudo-etiquetas pueden no aportar suficiente señal adicional.
 
-```{r}
-t.test(age ~ y, data = bank)
+# Conclusiones
 
-t.test(balance ~ y, data = bank)
-
-t.test(duration ~ y, data = bank)
-```
+Con base en el F1-score calculado después de ejecutar los modelos, el mejor modelo semi-supervisado observado fue **`r best_semi$modelo`** bajo la configuración `r best_semi$hiperparametro` y `r best_semi$porcentaje_etiquetado_label` de datos etiquetados. El baseline supervisado con 20% de etiquetas quedó levemente por encima, lo que indica que las pseudo-etiquetas no siempre mejoran el desempeño cuando la clase positiva es escasa.
 
-## Variables más relacionadas con y
+El laboratorio confirma que el aprendizaje semi-supervisado requiere controlar hiperparámetros y analizar errores para evitar propagación de pseudo-etiquetas incorrectas. En este dataset, el desbalance de clases y la eliminación de `duration` hacen el problema más realista y más difícil, por lo que F1, precision y recall aportan una lectura más honesta que accuracy.
 
-```{r}
-bank_num <- bank %>%
-  mutate(y = ifelse(y == "yes", 1, 0)) %>%
-  select(where(is.numeric))
+# Reproducibilidad
 
-cor_y <- cor(bank_num)
+Todo el análisis puede ejecutarse de dos formas:
 
-sort(cor_y[, "y"], decreasing = TRUE)
-```
+```{r reproducibilidad, eval=FALSE}
+# Opción 1: ejecutar el script principal
+source("lab10_semisupervisado.R")
 
-## Heatmap incluyendo variable objetivo
-
-```{r}
-corrplot(
-  cor(bank_num),
-  method = "color",
-  type = "upper",
-  addCoef.col = "black",
-  tl.col = "black"
-)
+# Opción 2: desde consola
+# Rscript lab10_semisupervisado.R
 ```
-
-## Resumen interpretativo automático
-
-```{r}
-cat("ANÁLISIS ESTADÍSTICO Y GRÁFICO\n")
-
-cat("\nNúmero de observaciones:", nrow(bank))
-cat("\nNúmero de variables:", ncol(bank))
-
-cat("\n\nDistribución porcentual de clases:\n")
-print(prop.table(table(bank$y)) * 100)
 
-cat("\n\nVariables numéricas analizadas:\n")
-print(names(select(bank, where(is.numeric))))
-
-cat("\n\nVariables categóricas analizadas:\n")
-print(names(select(bank, where(is.factor))))
-
-cat("\n\nEl dataset presenta desbalance de clases.")
-
-cat("\nExisten outliers principalmente en balance y duration.")
-
-cat("\nDuration muestra fuerte relación con la variable objetivo.")
-
-cat("\nLas variables categóricas muestran patrones diferentes según la suscripción.")
-```
+El script genera:
 
+- `outputs/metricas_modelos.csv`
+- `outputs/matrices_confusion.csv`
+- `outputs/mejores_por_modelo.csv`
+- `outputs/self_training_historial.csv`
+- `outputs/figures/*.png`
+- `report.md`
+- `Laboratorio10_Semisupervisado.pdf`
