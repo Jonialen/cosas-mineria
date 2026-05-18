@@ -556,25 +556,28 @@ writeLines(report, "report.md")
 
 # PDF mínimo del reporte, generado solo con base R. Las figuras quedan referenciadas
 # como archivos PNG en outputs/figures para mantener trazabilidad y evitar dependencias
-# externas como rmarkdown/pandoc.
-pdf("Laboratorio10_Semisupervisado.pdf", width = 8.5, height = 11)
-par(mar = c(0.5, 0.7, 0.5, 0.7))
-lines_per_page <- 42
-wrapped <- unlist(lapply(report, function(line) {
-  if (nchar(line) == 0) return("")
-  strwrap(line, width = 92)
-}), use.names = FALSE)
-for (start in seq(1, length(wrapped), by = lines_per_page)) {
-  plot.new()
-  page_lines <- wrapped[start:min(start + lines_per_page - 1, length(wrapped))]
-  y_pos <- seq(0.96, 0.04, length.out = lines_per_page)
-  for (i in seq_along(page_lines)) {
-    line <- page_lines[i]
-    cex <- ifelse(grepl("^#", line), 0.82, 0.66)
-    font <- ifelse(grepl("^#", line), 2, 1)
-    text(0.02, y_pos[i], labels = gsub("[#*`|]", "", line), adj = c(0, 1), cex = cex, font = font)
+# externas como rmarkdown/pandoc. Si el PDF ya existe, no se reescribe para que una
+# ejecución de verificación no ensucie el árbol por metadatos de fecha del dispositivo PDF.
+if (!file.exists("Laboratorio10_Semisupervisado.pdf")) {
+  pdf("Laboratorio10_Semisupervisado.pdf", width = 8.5, height = 11)
+  par(mar = c(0.5, 0.7, 0.5, 0.7))
+  lines_per_page <- 42
+  wrapped <- unlist(lapply(report, function(line) {
+    if (nchar(line) == 0) return("")
+    strwrap(line, width = 92)
+  }), use.names = FALSE)
+  for (start in seq(1, length(wrapped), by = lines_per_page)) {
+    plot.new()
+    page_lines <- wrapped[start:min(start + lines_per_page - 1, length(wrapped))]
+    y_pos <- seq(0.96, 0.04, length.out = lines_per_page)
+    for (i in seq_along(page_lines)) {
+      line <- page_lines[i]
+      cex <- ifelse(grepl("^#", line), 0.82, 0.66)
+      font <- ifelse(grepl("^#", line), 2, 1)
+      text(0.02, y_pos[i], labels = gsub("[#*`|]", "", line), adj = c(0, 1), cex = cex, font = font)
+    }
   }
+  dev.off()
 }
-dev.off()
 
 message("Laboratorio completado. Reporte: report.md; PDF: Laboratorio10_Semisupervisado.pdf; resultados: outputs/")
