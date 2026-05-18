@@ -1,7 +1,7 @@
 ---
-title: "Laboratorio 9: Redes Neuronales Artificiales — SmartStay Advisors"
+title: "Laboratorio 10: Aprendizaje Semi-Supervisado — Bank Marketing"
 author: "Jonathan Díaz, Martín Pérez, Karen Toledo"
-date: "2026-05-10"
+date: "2026-05-17"
 output:
   html_document:
     toc: true
@@ -15,7 +15,7 @@ Enlace del repositorio: https://github.com/Jonialen/cosas-mineria
 
 Referencia de la base de datos: Moro, S., Rita, P., & Cortez, P. (2014). Bank Marketing [Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C5K306.
 
-
+> Nota de entrega: el análisis semi-supervisado reproducible y autocontenido está en `lab10_semisupervisado.R`. Ese script usa únicamente base R, lee el dataset desde `bank+marketing/bank.zip` si `bank.csv` no existe en la raíz, genera tablas y figuras en `outputs/`, y escribe el reporte final en español en `report.md`.
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
