@@ -22,6 +22,10 @@ __pycache__/
 .venv/
 uv.lock
 
+# Local Pi runtime state
+.pi/
+.atl/
+
 # Sistema operativo
 .DS_Store
 Thumbs.db
