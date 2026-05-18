@@ -1,0 +1,4 @@
+"modelo","porcentaje_etiquetado","hiperparametro","accuracy","precision","recall","f1","pseudoetiquetas","porcentaje_etiquetado_label"
+"Baseline supervisado GLM",0.2,"-",0.889462048636699,0.546666666666667,0.261146496815287,0.353448275862069,0,"20%"
+"Propagación de etiquetas kNN-RBF",0.1,"k=10",0.871039056742815,0.378378378378378,0.178343949044586,0.242424242424242,2848,"10%"
+"Self-training GLM",0.2,"threshold=0.7",0.890198968312454,0.557142857142857,0.248407643312102,0.343612334801762,2484,"20%"

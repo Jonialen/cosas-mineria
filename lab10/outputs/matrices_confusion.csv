@@ -1,0 +1,85 @@
+"modelo","porcentaje_etiquetado","hiperparametro","real","predicho","n"
+"Baseline supervisado GLM",0.05,"-","no","no",1063
+"Baseline supervisado GLM",0.05,"-","yes","no",116
+"Baseline supervisado GLM",0.05,"-","no","yes",137
+"Baseline supervisado GLM",0.05,"-","yes","yes",41
+"Self-training GLM",0.05,"threshold=0.7","no","no",1051
+"Self-training GLM",0.05,"threshold=0.7","yes","no",115
+"Self-training GLM",0.05,"threshold=0.7","no","yes",149
+"Self-training GLM",0.05,"threshold=0.7","yes","yes",42
+"Self-training GLM",0.05,"threshold=0.8","no","no",1046
+"Self-training GLM",0.05,"threshold=0.8","yes","no",114
+"Self-training GLM",0.05,"threshold=0.8","no","yes",154
+"Self-training GLM",0.05,"threshold=0.8","yes","yes",43
+"Self-training GLM",0.05,"threshold=0.9","no","no",1052
+"Self-training GLM",0.05,"threshold=0.9","yes","no",114
+"Self-training GLM",0.05,"threshold=0.9","no","yes",148
+"Self-training GLM",0.05,"threshold=0.9","yes","yes",43
+"Propagación de etiquetas kNN-RBF",0.05,"k=5","no","no",1102
+"Propagación de etiquetas kNN-RBF",0.05,"k=5","yes","no",145
+"Propagación de etiquetas kNN-RBF",0.05,"k=5","no","yes",98
+"Propagación de etiquetas kNN-RBF",0.05,"k=5","yes","yes",12
+"Propagación de etiquetas kNN-RBF",0.05,"k=10","no","no",1105
+"Propagación de etiquetas kNN-RBF",0.05,"k=10","yes","no",145
+"Propagación de etiquetas kNN-RBF",0.05,"k=10","no","yes",95
+"Propagación de etiquetas kNN-RBF",0.05,"k=10","yes","yes",12
+"Propagación de etiquetas kNN-RBF",0.05,"k=20","no","no",1123
+"Propagación de etiquetas kNN-RBF",0.05,"k=20","yes","no",147
+"Propagación de etiquetas kNN-RBF",0.05,"k=20","no","yes",77
+"Propagación de etiquetas kNN-RBF",0.05,"k=20","yes","yes",10
+"Baseline supervisado GLM",0.1,"-","no","no",1168
+"Baseline supervisado GLM",0.1,"-","yes","no",127
+"Baseline supervisado GLM",0.1,"-","no","yes",32
+"Baseline supervisado GLM",0.1,"-","yes","yes",30
+"Self-training GLM",0.1,"threshold=0.7","no","no",1180
+"Self-training GLM",0.1,"threshold=0.7","yes","no",133
+"Self-training GLM",0.1,"threshold=0.7","no","yes",20
+"Self-training GLM",0.1,"threshold=0.7","yes","yes",24
+"Self-training GLM",0.1,"threshold=0.8","no","no",1182
+"Self-training GLM",0.1,"threshold=0.8","yes","no",134
+"Self-training GLM",0.1,"threshold=0.8","no","yes",18
+"Self-training GLM",0.1,"threshold=0.8","yes","yes",23
+"Self-training GLM",0.1,"threshold=0.9","no","no",1176
+"Self-training GLM",0.1,"threshold=0.9","yes","no",131
+"Self-training GLM",0.1,"threshold=0.9","no","yes",24
+"Self-training GLM",0.1,"threshold=0.9","yes","yes",26
+"Propagación de etiquetas kNN-RBF",0.1,"k=5","no","no",1131
+"Propagación de etiquetas kNN-RBF",0.1,"k=5","yes","no",133
+"Propagación de etiquetas kNN-RBF",0.1,"k=5","no","yes",69
+"Propagación de etiquetas kNN-RBF",0.1,"k=5","yes","yes",24
+"Propagación de etiquetas kNN-RBF",0.1,"k=10","no","no",1154
+"Propagación de etiquetas kNN-RBF",0.1,"k=10","yes","no",129
+"Propagación de etiquetas kNN-RBF",0.1,"k=10","no","yes",46
+"Propagación de etiquetas kNN-RBF",0.1,"k=10","yes","yes",28
+"Propagación de etiquetas kNN-RBF",0.1,"k=20","no","no",1174
+"Propagación de etiquetas kNN-RBF",0.1,"k=20","yes","no",140
+"Propagación de etiquetas kNN-RBF",0.1,"k=20","no","yes",26
+"Propagación de etiquetas kNN-RBF",0.1,"k=20","yes","yes",17
+"Baseline supervisado GLM",0.2,"-","no","no",1166
+"Baseline supervisado GLM",0.2,"-","yes","no",116
+"Baseline supervisado GLM",0.2,"-","no","yes",34
+"Baseline supervisado GLM",0.2,"-","yes","yes",41
+"Self-training GLM",0.2,"threshold=0.7","no","no",1169
+"Self-training GLM",0.2,"threshold=0.7","yes","no",118
+"Self-training GLM",0.2,"threshold=0.7","no","yes",31
+"Self-training GLM",0.2,"threshold=0.7","yes","yes",39
+"Self-training GLM",0.2,"threshold=0.8","no","no",1165
+"Self-training GLM",0.2,"threshold=0.8","yes","no",118
+"Self-training GLM",0.2,"threshold=0.8","no","yes",35
+"Self-training GLM",0.2,"threshold=0.8","yes","yes",39
+"Self-training GLM",0.2,"threshold=0.9","no","no",1166
+"Self-training GLM",0.2,"threshold=0.9","yes","no",120
+"Self-training GLM",0.2,"threshold=0.9","no","yes",34
+"Self-training GLM",0.2,"threshold=0.9","yes","yes",37
+"Propagación de etiquetas kNN-RBF",0.2,"k=5","no","no",1132
+"Propagación de etiquetas kNN-RBF",0.2,"k=5","yes","no",126
+"Propagación de etiquetas kNN-RBF",0.2,"k=5","no","yes",68
+"Propagación de etiquetas kNN-RBF",0.2,"k=5","yes","yes",31
+"Propagación de etiquetas kNN-RBF",0.2,"k=10","no","no",1166
+"Propagación de etiquetas kNN-RBF",0.2,"k=10","yes","no",134
+"Propagación de etiquetas kNN-RBF",0.2,"k=10","no","yes",34
+"Propagación de etiquetas kNN-RBF",0.2,"k=10","yes","yes",23
+"Propagación de etiquetas kNN-RBF",0.2,"k=20","no","no",1191
+"Propagación de etiquetas kNN-RBF",0.2,"k=20","yes","no",138
+"Propagación de etiquetas kNN-RBF",0.2,"k=20","no","yes",9
+"Propagación de etiquetas kNN-RBF",0.2,"k=20","yes","yes",19
